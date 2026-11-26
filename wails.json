@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "michael-auto",
+  "outputfilename": "michael-auto",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Michael",
+    "email": "danglongvipro@gmail.com"
+  },
+  "info": {
+    "companyName": "Michael",
+    "productName": "Michael Auto",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright © 2026 Michael",
+    "comments": "Unattended Quota Orchestrator & Profile Manager for Fedora Wayland"
+  }
+}

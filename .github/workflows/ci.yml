@@ -1,0 +1,61 @@
+name: CI Verification
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  verify:
+    name: Go Race Tests, Build, Self-Test, Python CUA Sidecar & React Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux GTK/WebKitGTK 4.1 headers for Wails production build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Python CUA sidecar syntax check & unit/workflow tests
+        run: |
+          python3 -m py_compile sidecar/michael_cua_sidecar/*.py sidecar/tests/test_sidecar.py
+          python3 -m unittest discover -s sidecar/tests -v
+
+      - name: Frontend dependencies, unit tests & production bundle
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run test -- --run
+          npm run build
+
+      - name: Go vet, uncached race-detector tests & coverage check
+        run: |
+          go vet ./...
+          go test -count=1 -v -race -coverprofile=coverage.out ./internal/...
+          go tool cover -func=coverage.out | tail -n 15
+
+      - name: Build production Wails Linux binary & run isolated --self-test
+        run: |
+          go build -tags webkit2_41 -trimpath -o build/bin/michael-auto .
+          ./build/bin/michael-auto --version
+          ./build/bin/michael-auto --self-test

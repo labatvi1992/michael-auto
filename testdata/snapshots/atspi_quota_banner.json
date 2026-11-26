@@ -1,0 +1,47 @@
+[
+  {
+    "role": "frame",
+    "name": "Antigravity — Workspace",
+    "focused": true,
+    "children": [
+      {
+        "role": "panel",
+        "name": "Header Bar",
+        "children": [
+          {
+            "role": "label",
+            "name": "Signed in as primary@example.com"
+          },
+          {
+            "role": "combo box",
+            "name": "gemini-2.5-pro",
+            "busName": ":1.42",
+            "objectPath": "/org/a11y/atspi/accessible/model_combo",
+            "hasAction": true,
+            "actionIndex": 0,
+            "x": 620,
+            "y": 24,
+            "width": 160,
+            "height": 32
+          },
+          {
+            "role": "push button",
+            "name": "Log out",
+            "busName": ":1.42",
+            "objectPath": "/org/a11y/atspi/accessible/logout_btn",
+            "hasAction": true,
+            "actionIndex": 0,
+            "x": 980,
+            "y": 24,
+            "width": 84,
+            "height": 32
+          }
+        ]
+      },
+      {
+        "role": "alert",
+        "name": "Quota exceeded: You've reached your usage limit for gemini-2.5-pro."
+      }
+    ]
+  }
+]

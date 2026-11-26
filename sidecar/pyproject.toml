@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "michael-auto-cua-sidecar"
+version = "2.5.0"
+description = "Deterministic trycua/cua (cua-driver) sidecar for Michael Auto"
+requires-python = ">=3.10"
+dependencies = ["cua-driver==0.58.1"]
+
+[project.scripts]
+michael-auto-cua = "michael_cua_sidecar.server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["michael_cua_sidecar*"]

@@ -1,0 +1,34 @@
+# Binaries & build artifacts
+build/bin/
+dist/
+*.exe
+*.out
+michael-auto
+
+# Frontend dependencies & build output
+frontend/node_modules/
+frontend/dist/
+frontend/wailsjs/
+frontend/package.json.md5
+
+# Go test & coverage
+*.test
+coverage.out
+coverage.html
+
+# OS & editor files
+.DS_Store
+*.swp
+*~
+.env
+
+# Python sidecar (michael_cua_sidecar)
+sidecar/__pycache__/
+sidecar/michael_cua_sidecar/__pycache__/
+sidecar/tests/__pycache__/
+sidecar/*.egg-info/
+sidecar/.venv/
+sidecar/dist/
+sidecar/build/
+*.pyc
+*.pyo

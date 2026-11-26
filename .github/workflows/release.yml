@@ -1,0 +1,66 @@
+name: Release Production Artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build Linux Binary, Tarball, RPM Spec & Checksums
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install GTK3 & WebKitGTK 4.1 headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Verify full test suite before packaging
+        run: |
+          python3 -m unittest discover -s sidecar/tests -v
+          cd frontend && npm ci && npm run test -- --run && npm run build
+          cd ..
+          go vet ./...
+          go test -count=1 -race ./internal/...
+
+      - name: Build release binary & user-space tarball + SHA256SUMS
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          go build -tags webkit2_41 -trimpath -ldflags="-s -w" -o build/bin/michael-auto .
+          ./build/bin/michael-auto --version
+          ./build/bin/michael-auto --self-test
+          mkdir -p dist/michael-auto-${TAG}
+          cp build/bin/michael-auto dist/michael-auto-${TAG}/
+          cp packaging/michael-auto.desktop packaging/michael-auto.service dist/michael-auto-${TAG}/
+          cp -r packaging/icons dist/michael-auto-${TAG}/
+          cp LICENSE README.md dist/michael-auto-${TAG}/
+          tar -czf dist/michael-auto-${TAG}-linux-amd64.tar.gz -C dist michael-auto-${TAG}
+          cp packaging/fedora/michael-auto.spec dist/
+          (cd dist && sha256sum michael-auto-${TAG}-linux-amd64.tar.gz michael-auto.spec > SHA256SUMS.txt)
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/michael-auto-*-linux-amd64.tar.gz
+            dist/michael-auto.spec
+            dist/SHA256SUMS.txt
+          generate_release_notes: true

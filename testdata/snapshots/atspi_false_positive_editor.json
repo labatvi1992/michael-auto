@@ -1,0 +1,15 @@
+[
+  {
+    "role": "frame",
+    "name": "Antigravity — michael-auto/README.md",
+    "focused": true,
+    "children": [
+      {
+        "role": "document text",
+        "name": "Editor Buffer README.md",
+        "editable": true,
+        "text": "CUA sidecar phát hiện quota hết -> Quota exceeded example text inside markdown editor"
+      }
+    ]
+  }
+]

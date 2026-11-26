@@ -1,0 +1,13 @@
+[
+  {
+    "role": "frame",
+    "name": "Sign in - Google Accounts",
+    "focused": true,
+    "children": [
+      {
+        "role": "dialog",
+        "name": "2-Step Verification — Verify you are human via Cloudflare Turnstile"
+      }
+    ]
+  }
+]

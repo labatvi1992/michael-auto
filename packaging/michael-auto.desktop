@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Michael Auto
+GenericName=AI Quota & Profile Orchestrator
+Comment=Tự động giám sát hạn mức và điều phối hồ sơ tài khoản cho Antigravity trên Fedora Wayland (Agent Workspace)
+Exec=michael-auto --start-hidden
+Icon=michael-auto
+Terminal=false
+Categories=Utility;Development;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
