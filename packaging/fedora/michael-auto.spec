@@ -5,11 +5,10 @@ Summary:        Evidence-Driven AI Quota & Profile Orchestrator for Fedora Wayla
 
 License:        MIT
 URL:            https://github.com/labatvi1992/michael-auto
-Source0:        %{name}-%{version}.tar.gz
+# Generated offline-ready source bundle via `make rpm-source` (includes pre-built frontend/dist + Go vendor/)
+Source0:        %{name}-%{version}-source.tar.gz
 
 BuildRequires:  golang >= 1.24
-BuildRequires:  nodejs >= 20
-BuildRequires:  npm
 BuildRequires:  gtk3-devel
 BuildRequires:  webkit2gtk4.1-devel
 BuildRequires:  pkgconfig
@@ -29,14 +28,11 @@ Screenshot Evidence (SHA-256 + HiDPI editor privacy redaction) -> Execute,
 or OAuth tokens.
 
 %prep
-%autosetup
+%autosetup -n %{name}-%{version}
 
 %build
-pushd frontend
-npm ci
-npm run build
-popd
-go build -tags webkit2_41 -trimpath -ldflags="-s -w" -o build/bin/michael-auto .
+test -f frontend/dist/index.html || { echo "Missing pre-built frontend/dist — generate Source0 with 'make rpm-source'"; exit 1; }
+GOFLAGS=-mod=vendor go build -tags webkit2_41 -trimpath -ldflags="-s -w" -o build/bin/michael-auto .
 
 %install
 install -Dpm 0755 build/bin/michael-auto %{buildroot}%{_bindir}/michael-auto
@@ -46,16 +42,22 @@ sed 's|%h/.local/bin/michael-auto|%{_bindir}/michael-auto|g' packaging/michael-a
 install -Dpm 0644 michael-auto.service.rpm %{buildroot}%{_userunitdir}/michael-auto.service
 
 %files
-%license LICENSE
-%doc README.md docs/ARCHITECTURE.md
+%license LICENSE THIRD_PARTY_NOTICES.md
+%doc README.md CHANGELOG.md SECURITY.md docs/ARCHITECTURE.md
 %{_bindir}/michael-auto
 %{_datadir}/applications/michael-auto.desktop
 %{_datadir}/icons/hicolor/scalable/apps/michael-auto.svg
 %{_userunitdir}/michael-auto.service
 
 %post
+update-desktop-database -q %{_datadir}/applications 2>/dev/null || :
+gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor 2>/dev/null || :
 echo "Run 'michael-auto --setup-sidecar && michael-auto --doctor' as your desktop user to initialize Agent Workspace & Python venv."
+
+%postun
+update-desktop-database -q %{_datadir}/applications 2>/dev/null || :
+gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor 2>/dev/null || :
 
 %changelog
 * Thu Nov 26 2026 Michael Auto Maintainers <maintainers@michael-auto.local> - 2.5.0-1
-- Production Release v2.5.0: Dedicated Agent Workspace, offscreen Meta.WindowActor capture, HiDPI redaction, GNOME LockScreen guard, pinned cua-driver==0.58.1, Dual-Track RPM + systemd packaging.
+- Production Release v2.5.0 (GA Candidate): Dedicated Agent Workspace, GNOME Shell v4 offscreen capture & ArmAutoRoute, HiDPI redaction, GNOME LockScreen guard, SHA-256 hash-verified cua-driver==0.58.1, offline RPM build + systemd --start-hidden.

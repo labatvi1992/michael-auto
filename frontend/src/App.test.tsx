@@ -31,6 +31,7 @@ describe("Michael Auto Desktop Dashboard v2.5 Production", () => {
       expect(screen.getByTestId("fsm-state-pill")).toHaveTextContent("Đang quan sát định kỳ");
     });
 
+    expect(screen.getByTestId("app-version-badge")).toHaveTextContent("v2.5.0");
     expect(screen.getByTestId("dryrun-mode-banner")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Bật Chế độ Thực thi Thật/i }));
     await waitFor(() => {

@@ -293,4 +293,40 @@ func TestCLIConfigAtomicReadWritePreservesExistingFields(t *testing.T) {
 	if _, err := os.Stat(settingsFile + ".bak"); err != nil {
 		t.Fatalf("expected atomic backup file .bak to exist: %v", err)
 	}
+
+	// Verify Tier-1 Observe() and Health() states!
+	cfg := domain.DefaultConfig()
+	cfg.CLISettingsPath = settingsFile
+	obs, err := adapter.Observe(context.Background(), cfg)
+	if err != nil || obs.ActiveModel != "gemini-2.5-flash" || obs.Confidence != 1.0 {
+		t.Fatalf("unexpected CLIConfig Observe: %+v (err=%v)", obs, err)
+	}
+	if h := adapter.Health(context.Background(), cfg); !h.Healthy || !strings.Contains(h.Detail, "settings.json") {
+		t.Fatalf("expected healthy CLIConfig Health, got %+v", h)
+	}
+	cfg.CLISettingsPath = filepath.Join(tmp, "not-yet-created.json")
+	if h := adapter.Health(context.Background(), cfg); !h.Healthy {
+		t.Fatalf("expected healthy pending CLIConfig Health, got %+v", h)
+	}
+	cfg.CLISettingsPath = ""
+	if h := adapter.Health(context.Background(), cfg); h.Healthy {
+		t.Fatalf("expected unhealthy CLIConfig Health when path empty, got %+v", h)
+	}
+	if _, err := adapter.ReadActiveModel(""); err == nil {
+		t.Fatal("expected error on empty settings path")
+	}
+	if err := adapter.WriteActiveModel(settingsFile, "", false); err == nil {
+		t.Fatal("expected error on empty model name")
+	}
+
+	// Read-only ATSPI2Sensor constructor, TierName, Observe & Health smoke test.
+	atspi := NewATSPI2Sensor()
+	if atspi.TierName() != "atspi2" {
+		t.Fatalf("expected tier name 'atspi2', got %q", atspi.TierName())
+	}
+	hCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = atspi.Health(hCtx, cfg)
+	_, _ = atspi.Observe(hCtx, cfg)
+	atspi.resetConn()
 }

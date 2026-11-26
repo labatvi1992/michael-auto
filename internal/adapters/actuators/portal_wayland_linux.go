@@ -4,9 +4,10 @@ package actuators
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,14 @@ import (
 	"github.com/labatvi1992/michael-auto/internal/domain"
 	"github.com/labatvi1992/michael-auto/internal/ports"
 )
+
+func cryptoPortalToken(prefix string) string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
+	}
+	return prefix + "_" + hex.EncodeToString(buf[:])
+}
 
 const (
 	portalDest          = "org.freedesktop.portal.Desktop"
@@ -85,7 +94,7 @@ func (a *WaylandPortalActuator) EnsureSession(ctx context.Context) error {
 	}
 
 	portalObj := conn.Object(portalDest, portalPath)
-	sessionToken := fmt.Sprintf("michael_auto_sess_%d", rand.Int63n(999999))
+	sessionToken := cryptoPortalToken("michael_auto_sess")
 
 	// 1. CreateSession
 	createRes, err := a.callPortalRequest(ctx, conn, func(reqToken string) (*dbus.Call, error) {
@@ -295,7 +304,7 @@ func (a *WaylandPortalActuator) callPortalRequest(
 	conn *dbus.Conn,
 	invoke func(reqToken string) (*dbus.Call, error),
 ) (map[string]dbus.Variant, error) {
-	reqToken := fmt.Sprintf("ma_req_%d", rand.Int63n(99999999))
+	reqToken := cryptoPortalToken("ma_req")
 	sender := strings.TrimPrefix(conn.Names()[0], ":")
 	sender = strings.ReplaceAll(sender, ".", "_")
 	expectedPath := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/portal/desktop/request/%s/%s", sender, reqToken))

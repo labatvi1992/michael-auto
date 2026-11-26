@@ -43,12 +43,18 @@ func main() {
 		runSelfTest  = flag.Bool("self-test", false, "Chạy kiểm tra tự chẩn đoán toàn trình trong môi trường cô lập")
 		headless     = flag.Bool("headless", false, "Chạy dịch vụ điều phối nền không mở cửa sổ giao diện")
 		startHidden  = flag.Bool("start-hidden", false, "Khởi động ẩn trực tiếp vào khay hệ thống")
+		ctlCmd       = flag.String("ctl", "", "Gửi lệnh điều khiển tới tiến trình đang chạy qua control.sock (status|pause|resume|show|quit)")
 		configPath   = flag.String("config", "", "Đường dẫn tệp config.json tùy chỉnh")
 	)
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("Michael Auto v%s (trycua/cua + Fedora 45 Agent Workspace + Evidence Vault)\n", AppVersion)
+		return
+	}
+
+	if strings.TrimSpace(*ctlCmd) != "" {
+		executeControlCommand(*ctlCmd)
 		return
 	}
 
@@ -100,6 +106,13 @@ func main() {
 		os.Exit(1)
 	}
 	if !acquired {
+		reply := instanceGuard.LastWakeReply()
+		if reply == "ok:headless" {
+			msg := "Michael Auto đang chạy ở chế độ --headless (không có cửa sổ GUI). Dừng tiến trình nền bằng 'michael-auto --ctl quit' hoặc 'systemctl --user stop michael-auto.service' rồi mở lại biểu tượng ứng dụng."
+			fmt.Fprintln(os.Stderr, msg)
+			tray.NewDesktopNotifier().Notify("Michael Auto đang chạy nền (Headless)", msg, true)
+			return
+		}
 		fmt.Println("Michael Auto đang chạy nền — đã gửi tín hiệu mở cửa sổ quản trị.")
 		return
 	}
@@ -111,6 +124,9 @@ func main() {
 		os.Exit(1)
 	}
 	instanceGuard.SetShowWindowCallback(app.ShowMainWindow)
+	instanceGuard.SetControlCallback(func(cmd string) string {
+		return app.HandleControlCommand(cmd, "gui", nil)
+	})
 
 	err = wails.Run(&options.App{
 		Title:             "Michael Auto — Agent Workspace & Evidence-Driven Quota Orchestrator",
@@ -155,15 +171,34 @@ func applyNvidiaWaylandWebKitWorkaround() {
 	}
 }
 
+func executeControlCommand(rawCmd string) {
+	cmd := strings.ToLower(strings.TrimSpace(rawCmd))
+	if cmd == "show" {
+		cmd = "show-window"
+	}
+	guard := storage.NewInstanceGuard("")
+	reply, err := guard.SendCommand(cmd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Không thể kết nối tới Michael Auto daemon qua control.sock: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(reply)
+}
+
 func runHeadlessDaemon(customConfigPath string) {
 	instanceGuard := storage.NewInstanceGuard("")
-	acquired, lockErr := instanceGuard.AcquireOrWakeExisting(nil)
+	acquired, lockErr := instanceGuard.AcquireWithoutWake()
 	if lockErr != nil {
 		fmt.Fprintf(os.Stderr, "Lỗi khóa đơn tiến trình headless: %v\n", lockErr)
 		os.Exit(1)
 	}
 	if !acquired {
-		fmt.Println("Michael Auto daemon đang chạy sẵn trên hệ thống — bỏ qua khởi chạy trùng lặp.")
+		reply := instanceGuard.LastWakeReply()
+		if reply != "" {
+			fmt.Printf("Michael Auto daemon đang chạy sẵn (%s) — bỏ qua khởi chạy trùng lặp.\n", reply)
+		} else {
+			fmt.Println("Michael Auto daemon đang chạy sẵn trên hệ thống — bỏ qua khởi chạy trùng lặp.")
+		}
 		return
 	}
 	defer instanceGuard.Close()
@@ -173,11 +208,17 @@ func runHeadlessDaemon(customConfigPath string) {
 		fmt.Fprintf(os.Stderr, "Lỗi khởi tạo headless daemon: %v\n", err)
 		os.Exit(1)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, cancel := context.WithCancel(sigCtx)
+	defer cancel()
+
+	instanceGuard.SetControlCallback(func(cmd string) string {
+		return app.HandleControlCommand(cmd, "headless", cancel)
+	})
 
 	_ = app.orch.Start(ctx)
-	fmt.Printf("Michael Auto v%s đang chạy ở chế độ headless trên Agent Workspace (Ctrl+C để dừng)...\n", AppVersion)
+	fmt.Printf("Michael Auto v%s đang chạy ở chế độ headless trên Agent Workspace (Ctrl+C hoặc 'michael-auto --ctl quit' để dừng)...\n", AppVersion)
 	<-ctx.Done()
 	app.shutdown(context.Background())
 }

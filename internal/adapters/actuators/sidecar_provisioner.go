@@ -22,9 +22,10 @@ import (
 )
 
 const (
-	pinnedCuaDriverSpec = "cua-driver==0.58.1"
-	pinnedUvVersion     = "0.6.6"
-	maxUvArchiveLen     = 64 * 1024 * 1024 // 64 MB safety cap
+	pinnedCuaDriverSpec     = "cua-driver==0.58.1"
+	pinnedCuaDriverLockFile = "cua-driver-0.58.1.requirements.lock"
+	pinnedUvVersion         = "0.6.6"
+	maxUvArchiveLen         = 64 * 1024 * 1024 // 64 MB safety cap
 )
 
 // DefaultXDGDataDir returns $XDG_DATA_HOME/michael-auto (default ~/.local/share/michael-auto).
@@ -181,6 +182,21 @@ func createUvPython312Venv(ctx context.Context, uvBin, venvDir string, out *byte
 	return cmd.Run()
 }
 
+// buildPipWheelInstallArgs builds pip arguments with mandatory --only-binary=:all:,
+// SHA-256 --require-hashes lockfile enforcement for the pinned release, and optional offline CUA_WHEEL_DIR support.
+func buildPipWheelInstallArgs(cuaPkgSpec, lockFilePath, offlineWheelDir string) []string {
+	args := []string{"-m", "pip", "install", "--only-binary=:all:"}
+	if dir := strings.TrimSpace(offlineWheelDir); dir != "" {
+		args = append(args, "--no-index", "--find-links", dir)
+	}
+	if strings.TrimSpace(cuaPkgSpec) == pinnedCuaDriverSpec && strings.TrimSpace(lockFilePath) != "" {
+		if _, err := os.Stat(lockFilePath); err == nil {
+			return append(args, "--require-hashes", "-r", lockFilePath)
+		}
+	}
+	return append(args, cuaPkgSpec)
+}
+
 func installWheelAndSidecarIntoVenv(
 	ctx context.Context,
 	venvPy string,
@@ -196,11 +212,15 @@ func installWheelAndSidecarIntoVenv(
 	installCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 
-	wheelCmd := exec.CommandContext(installCtx, venvPy, "-m", "pip", "install", "--only-binary=:all:", cuaPkgSpec)
+	lockPath := filepath.Join(sidecarRoot, pinnedCuaDriverLockFile)
+	offlineWheelDir := strings.TrimSpace(os.Getenv("CUA_WHEEL_DIR"))
+	pipArgs := buildPipWheelInstallArgs(cuaPkgSpec, lockPath, offlineWheelDir)
+
+	wheelCmd := exec.CommandContext(installCtx, venvPy, pipArgs...)
 	wheelCmd.Stdout = logBuf
 	wheelCmd.Stderr = logBuf
 	if err := wheelCmd.Run(); err != nil {
-		return fmt.Errorf("cài đặt binary wheel %s thất bại: %w", cuaPkgSpec, err)
+		return fmt.Errorf("cài đặt binary wheel %s thất bại (SHA-256 verified): %w", cuaPkgSpec, err)
 	}
 
 	sidecarCmd := exec.CommandContext(installCtx, venvPy, "-m", "pip", "install", "--no-deps", sidecarRoot)

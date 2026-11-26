@@ -76,8 +76,30 @@ const IFACE_XML = ` + "`" + `
     <method name="GetActiveWorkspace">
       <arg type="i" direction="out" name="activeIndex"/>
     </method>
+    <method name="ArmAutoRoute">
+      <arg type="u" direction="in" name="ttlSeconds"/>
+      <arg type="u" direction="in" name="workspaceIndex"/>
+      <arg type="b" direction="out" name="armed"/>
+    </method>
   </interface>
 </node>` + "`" + `;
+
+const AUTO_ROUTE_TITLE_MARKERS = [
+  'google accounts',
+  'sign in',
+  'choose an account',
+  'chọn tài khoản',
+  'accounts.google.com',
+  'antigravity',
+];
+
+const AUTO_ROUTE_WMCLASS_MARKERS = [
+  'google-chrome',
+  'chromium',
+  'brave-browser',
+  'microsoft-edge',
+  'antigravity',
+];
 
 function _isAllowedEvidencePath(outPath) {
   if (!outPath || typeof outPath !== 'string') return false;
@@ -92,6 +114,74 @@ function _isAllowedEvidencePath(outPath) {
 }
 
 class WorkspaceBridgeService {
+  constructor() {
+    this._autoRouteUntilMs = 0;
+    this._autoRouteWsIdx = -1;
+  }
+
+  dispose() {
+    this._autoRouteUntilMs = 0;
+    this._autoRouteWsIdx = -1;
+  }
+
+  ArmAutoRoute(ttlSeconds, workspaceIndex) {
+    if (ttlSeconds <= 0) {
+      this._autoRouteUntilMs = 0;
+      this._autoRouteWsIdx = -1;
+      return true;
+    }
+    const clampedTtl = Math.min(Math.max(ttlSeconds, 1), 60);
+    const nWs = global.workspace_manager.get_n_workspaces();
+    if (workspaceIndex < 0 || (nWs > 0 && workspaceIndex >= nWs)) {
+      return false;
+    }
+    this._autoRouteWsIdx = workspaceIndex;
+    this._autoRouteUntilMs = Date.now() + clampedTtl * 1000;
+    return true;
+  }
+
+  _matchesAutoRouteWindow(win) {
+    if (!win) return false;
+    const title = (win.get_title() || '').toLowerCase();
+    const wmClass = (win.get_wm_class() || '').toLowerCase();
+    for (const marker of AUTO_ROUTE_TITLE_MARKERS) {
+      if (title.includes(marker)) return true;
+    }
+    for (const cls of AUTO_ROUTE_WMCLASS_MARKERS) {
+      if (wmClass.includes(cls)) return true;
+    }
+    return false;
+  }
+
+  handleWindowCreated(win) {
+    if (!win || this._autoRouteWsIdx < 0 || Date.now() >= this._autoRouteUntilMs) {
+      return;
+    }
+    const targetWs = this._autoRouteWsIdx;
+    if (this._matchesAutoRouteWindow(win)) {
+      try {
+        win.change_workspace_by_index(targetWs, false);
+      } catch (_e) {}
+      return;
+    }
+    // Fallback if title/wm_class populates right after initial MetaWindow creation.
+    const sigId = win.connect('notify::title', () => {
+      if (Date.now() >= this._autoRouteUntilMs) {
+        try { win.disconnect(sigId); } catch (_e) {}
+        return;
+      }
+      if (this._matchesAutoRouteWindow(win)) {
+        try {
+          win.change_workspace_by_index(targetWs, false);
+          win.disconnect(sigId);
+        } catch (_e) {}
+      }
+    });
+    win.connect('unmanaged', () => {
+      try { win.disconnect(sigId); } catch (_e) {}
+    });
+  }
+
   ResolveAgentWorkspace(expectedName) {
     const wanted = (expectedName || 'Agent Workspace').trim().toLowerCase();
     try {
@@ -278,9 +368,21 @@ export default class MichaelAutoWorkspaceExtension extends Extension {
     this._service = new WorkspaceBridgeService();
     this._dbus = Gio.DBusExportedObject.wrapJSObject(IFACE_XML, this._service);
     this._dbus.export(Gio.DBus.session, '/io/michael_auto/WorkspaceBridge');
+    this._winCreatedId = global.display.connect('window-created', (_display, win) => {
+      if (this._service) {
+        this._service.handleWindowCreated(win);
+      }
+    });
   }
 
   disable() {
+    if (this._winCreatedId) {
+      global.display.disconnect(this._winCreatedId);
+      this._winCreatedId = 0;
+    }
+    if (this._service) {
+      this._service.dispose();
+    }
     if (this._dbus) {
       this._dbus.unexport();
       this._dbus = null;
@@ -431,7 +533,7 @@ func (m *WaylandWorkspaceManager) Status(ctx context.Context, cfg domain.AppConf
 	isStatic := dynErr == nil && strings.TrimSpace(dynOut) == "false"
 	hasEnough := numErr == nil && numWS >= idx+1
 	hasLabel := matchedByName || containsWorkspaceName(parseGSettingsWorkspaceNames(namesOut), name)
-	bridgeLive := m.isGnomeWaylandBridgeLive(ctx)
+	bridgeLive, bridgeOffscreen, bridgeAutoRoute := m.inspectGnomeWaylandBridge(ctx)
 	_, hasWmctrl := m.lookPath("wmctrl")
 	_, hasXdotool := m.lookPath("xdotool")
 	extInstalled := m.isExtensionWritten()
@@ -441,7 +543,11 @@ func (m *WaylandWorkspaceManager) Status(ctx context.Context, cfg domain.AppConf
 		switch {
 		case bridgeLive:
 			st.Ready = true
-			st.Detail = fmt.Sprintf("Đã dành riêng %q (Workspace #%d) + Cầu nối Native Wayland D-Bus đang hoạt động", name, idx+1)
+			if bridgeOffscreen && bridgeAutoRoute {
+				st.Detail = fmt.Sprintf("Đã dành riêng %q (Workspace #%d) + Cầu nối Native Wayland v4 (Offscreen + ArmAutoRoute) đang hoạt động", name, idx+1)
+			} else {
+				st.Detail = fmt.Sprintf("Đã dành riêng %q (Workspace #%d) + Cầu nối Wayland cũ đang chạy — đăng xuất/đăng nhập lại GNOME 1 lần để nạp v4 Offscreen & chống nháy OAuth", name, idx+1)
+			}
 		case hasWmctrl == nil || hasXdotool == nil:
 			st.Ready = true
 			st.Detail = fmt.Sprintf("Đã dành riêng %q (Workspace #%d) tách biệt User Workspace (XWayland router sẵn sàng)", name, idx+1)
@@ -680,10 +786,10 @@ func (m *WaylandWorkspaceManager) isExtensionWritten() bool {
 	return err == nil
 }
 
-func (m *WaylandWorkspaceManager) isGnomeWaylandBridgeLive(ctx context.Context) bool {
+func (m *WaylandWorkspaceManager) inspectGnomeWaylandBridge(ctx context.Context) (live bool, hasOffscreen bool, hasAutoRoute bool) {
 	gdbusBin, err := m.lookPath("gdbus")
 	if err != nil {
-		return false
+		return false, false, false
 	}
 	out, err := m.runCmd(
 		ctx,
@@ -692,7 +798,44 @@ func (m *WaylandWorkspaceManager) isGnomeWaylandBridgeLive(ctx context.Context) 
 		"--dest", "org.gnome.Shell",
 		"--object-path", GnomeBridgeDBusObject,
 	)
-	return err == nil && strings.Contains(out, GnomeBridgeDBusInterface)
+	if err != nil || !strings.Contains(out, GnomeBridgeDBusInterface) {
+		return false, false, false
+	}
+	return true, strings.Contains(out, "GetWindowFrame"), strings.Contains(out, "ArmAutoRoute")
+}
+
+func (m *WaylandWorkspaceManager) isGnomeWaylandBridgeLive(ctx context.Context) bool {
+	live, _, _ := m.inspectGnomeWaylandBridge(ctx)
+	return live
+}
+
+// ArmAutoRoute asks the GNOME Shell Wayland bridge to pre-route newly created Chrome/OAuth/Antigravity
+// windows straight onto the named "Agent Workspace" before first frame paint (zero flash on User Workspace #1).
+func (m *WaylandWorkspaceManager) ArmAutoRoute(ctx context.Context, cfg domain.AppConfig, ttlSeconds int) bool {
+	if !cfg.CuaDriver.AgentWorkspaceEnabled {
+		return false
+	}
+	if ttlSeconds < 1 {
+		ttlSeconds = 15
+	}
+	gdbusBin, err := m.lookPath("gdbus")
+	if err != nil {
+		return false
+	}
+	idx, _ := m.resolveAgentWorkspaceIndex(ctx, cfg)
+	qCtx, cancel := context.WithTimeout(ctx, 400*time.Millisecond)
+	defer cancel()
+	out, callErr := m.runCmd(
+		qCtx,
+		gdbusBin,
+		"call", "--session",
+		"--dest", "org.gnome.Shell",
+		"--object-path", GnomeBridgeDBusObject,
+		"--method", GnomeBridgeDBusInterface+".ArmAutoRoute",
+		strconv.Itoa(ttlSeconds),
+		strconv.Itoa(idx),
+	)
+	return callErr == nil && strings.Contains(strings.ToLower(out), "true")
 }
 
 func (m *WaylandWorkspaceManager) ensureGnomeWaylandBridgeExtension(ctx context.Context) error {
@@ -713,9 +856,9 @@ func (m *WaylandWorkspaceManager) ensureGnomeWaylandBridgeExtension(ctx context.
 	meta := map[string]interface{}{
 		"uuid":          GnomeBridgeExtensionUUID,
 		"name":          "Michael Auto Agent Workspace Bridge",
-		"description":   "Dedicated Agent Workspace routing & zero-leak offscreen window capture on GNOME Wayland.",
+		"description":   "Dedicated Agent Workspace routing, zero-flash ArmAutoRoute & offscreen window capture on GNOME Wayland.",
 		"shell-version": versions,
-		"version":       3,
+		"version":       4,
 	}
 	metaRaw, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {

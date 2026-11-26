@@ -481,6 +481,10 @@ func (a *CuaDriverActuator) ClickSignIn(ctx context.Context, dryRun bool) error 
 	}
 	a.mu.Unlock()
 
+	if a.extraEnv == nil {
+		a.armWorkspaceAutoRoute(ctx, 15)
+	}
+
 	if preWarmProf != nil && a.browserRouter != nil && strings.TrimSpace(preWarmProf.BrowserProfileDir) != "" {
 		warmCopy := *preWarmProf
 		warmCopy.AuthStartURL = "https://accounts.google.com"
@@ -512,6 +516,56 @@ func isSafeGoogleOAuthRelayURL(rawURL string) bool {
 		return false
 	}
 	return strings.EqualFold(u.Hostname(), "accounts.google.com")
+}
+
+// armWorkspaceAutoRoute asks GNOME Shell WorkspaceBridge v4 to route newly spawned Chrome OAuth windows
+// directly to the dedicated "Agent Workspace" before first frame paint (zero flash on User Workspace #1).
+func (a *CuaDriverActuator) armWorkspaceAutoRoute(ctx context.Context, ttlSeconds int) {
+	a.mu.Lock()
+	wsEnabled := a.cfg.AgentWorkspaceEnabled
+	wsIdx := a.cfg.AgentWorkspaceIndex
+	wsName := strings.TrimSpace(a.cfg.AgentWorkspaceName)
+	a.mu.Unlock()
+	if !wsEnabled {
+		return
+	}
+	if wsIdx < 1 {
+		wsIdx = 1
+	}
+	if wsName == "" {
+		wsName = domain.DefaultAgentWorkspaceName
+	}
+	gdbusBin, err := exec.LookPath("gdbus")
+	if err != nil {
+		return
+	}
+	qCtx, cancel := context.WithTimeout(ctx, 400*time.Millisecond)
+	defer cancel()
+	// Resolve authoritative workspace index by name first when available.
+	if out, rErr := exec.CommandContext(
+		qCtx,
+		gdbusBin,
+		"call", "--session",
+		"--dest", "org.gnome.Shell",
+		"--object-path", "/io/michael_auto/WorkspaceBridge",
+		"--method", "io.michael_auto.WorkspaceBridge.ResolveAgentWorkspace",
+		wsName,
+	).Output(); rErr == nil && strings.Contains(strings.ToLower(string(out)), "true") {
+		var resolved int
+		if _, scanErr := fmt.Sscanf(strings.TrimLeft(string(out), "(int32 "), "%d", &resolved); scanErr == nil && resolved >= 0 {
+			wsIdx = resolved
+		}
+	}
+	_ = exec.CommandContext(
+		qCtx,
+		gdbusBin,
+		"call", "--session",
+		"--dest", "org.gnome.Shell",
+		"--object-path", "/io/michael_auto/WorkspaceBridge",
+		"--method", "io.michael_auto.WorkspaceBridge.ArmAutoRoute",
+		fmt.Sprintf("%d", ttlSeconds),
+		fmt.Sprintf("%d", wsIdx),
+	).Run()
 }
 
 // SelectChromeAccount strictly ensures Chrome is running the target --profile-directory,
@@ -578,6 +632,9 @@ func (a *CuaDriverActuator) SelectChromeAccount(ctx context.Context, profile dom
 			explicitProf.AuthStartURL = strings.TrimSpace(relayErr.relayURL)
 		} else if strings.TrimSpace(explicitProf.AuthStartURL) == "" {
 			explicitProf.AuthStartURL = "https://accounts.google.com/AccountChooser"
+		}
+		if a.extraEnv == nil {
+			a.armWorkspaceAutoRoute(ctx, 15)
 		}
 		_ = a.browserRouter.OpenProfileSession(ctx, explicitProf, dryRun)
 		return a.withActuationLease(9*time.Second, func() error {

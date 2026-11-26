@@ -301,6 +301,39 @@ def _mask_editor_enabled() -> bool:
     return os.environ.get("CUA_MASK_EDITOR_EVIDENCE", "1") == "1"
 
 
+def _arm_gnome51_auto_route(ttl_seconds: int = 15) -> bool:
+    """Arm GNOME Shell WorkspaceBridge v4 window-created auto-routing to dedicated 'Agent Workspace' (R3)."""
+    enabled, ws_idx = _agent_workspace_enabled()
+    if not enabled or not sys.platform.startswith("linux"):
+        return False
+    gdbus_bin = shutil.which("gdbus")
+    if not gdbus_bin:
+        return False
+    try:
+        res = subprocess.run(
+            [
+                gdbus_bin,
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.Shell",
+                "--object-path",
+                "/io/michael_auto/WorkspaceBridge",
+                "--method",
+                "io.michael_auto.WorkspaceBridge.ArmAutoRoute",
+                str(max(1, min(int(ttl_seconds), 60))),
+                str(ws_idx),
+            ],
+            timeout=0.35,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return res.returncode == 0 and "true" in (res.stdout or "").lower()
+    except Exception:
+        return False
+
+
 def _pin_window_to_agent_workspace(handle: WindowHandle) -> None:
     """Move target window silently to the Fedora 45 Agent Workspace without switching the User's active view."""
     enabled, ws_idx = _agent_workspace_enabled()
@@ -1191,6 +1224,8 @@ async def click_signin(
     b64, cap_scope, win_frame = await _capture_or_fallback_evidence_b64(
         driver, ev_state, handle, require_evidence, "03_pre_signin_antigravity"
     )
+    if is_native and ws_enabled:
+        _arm_gnome51_auto_route(15)
     await _click_target_on_window(driver, handle, build_target_dict(signin_el))
 
     return {

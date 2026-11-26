@@ -1127,6 +1127,30 @@ class SidecarWorkflowTest(unittest.TestCase):
         finally:
             set_driver_for_testing(self.fake_driver)
 
+    def test_arm_gnome51_auto_route_invokes_v4_bridge_with_clamped_ttl(self) -> None:
+        from unittest.mock import MagicMock, patch
+        from michael_cua_sidecar import actuator
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_kw: Any) -> Any:
+            calls.append(cmd)
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "(true,)"
+            return m
+
+        with (
+            patch.dict(os.environ, {"CUA_AGENT_WORKSPACE_ENABLED": "1", "CUA_AGENT_WORKSPACE_INDEX": "1"}),
+            patch.object(actuator.shutil, "which", return_value="/usr/bin/gdbus"),
+            patch.object(actuator, "_resolve_agent_workspace_index_by_name", return_value=2),
+            patch.object(actuator.subprocess, "run", side_effect=fake_run),
+        ):
+            self.assertTrue(actuator._arm_gnome51_auto_route(999))
+            self.assertEqual(len(calls), 1)
+            self.assertIn("io.michael_auto.WorkspaceBridge.ArmAutoRoute", calls[0])
+            self.assertEqual(calls[0][-2:], ["60", "2"])
+
 
 if __name__ == "__main__":
     unittest.main()

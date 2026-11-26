@@ -29,6 +29,9 @@ type FreedesktopSecretStore struct {
 	mu       sync.Mutex
 	fallback map[string]string
 	backend  string
+	getFn    func(key string) (string, error)
+	setFn    func(key, value string) error
+	delFn    func(key string) error
 }
 
 // NewSecretStore creates a Linux Secret Service store with safe fallback if no keyring daemon is running.
@@ -37,6 +40,9 @@ func NewSecretStore() *FreedesktopSecretStore {
 		fallback: make(map[string]string),
 		backend:  "freedesktop-secret-service",
 	}
+	s.getFn = s.dbusGet
+	s.setFn = s.dbusSet
+	s.delFn = s.dbusDelete
 	return s
 }
 
@@ -52,7 +58,7 @@ func (s *FreedesktopSecretStore) Get(key string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	val, err := s.dbusGet(key)
+	val, err := s.getFn(key)
 	if err == nil {
 		return val, nil
 	}
@@ -68,7 +74,7 @@ func (s *FreedesktopSecretStore) Set(key, value string) error {
 	defer s.mu.Unlock()
 
 	s.fallback[key] = value
-	if err := s.dbusSet(key, value); err != nil {
+	if err := s.setFn(key, value); err != nil {
 		s.backend = "memory-fallback"
 	} else {
 		s.backend = "freedesktop-secret-service"
@@ -81,7 +87,7 @@ func (s *FreedesktopSecretStore) Delete(key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.fallback, key)
-	_ = s.dbusDelete(key)
+	_ = s.delFn(key)
 	return nil
 }
 
@@ -109,6 +115,9 @@ func (s *FreedesktopSecretStore) dbusGet(key string) (string, error) {
 		return "", err
 	}
 	if len(unlocked) == 0 {
+		if len(locked) > 0 {
+			return "", errors.New("gnome keyring đang bị khóa (cần mở khóa phiên)")
+		}
 		return "", errors.New("secret not found")
 	}
 

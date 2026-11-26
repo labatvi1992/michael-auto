@@ -132,6 +132,7 @@ export interface ScreenState {
 }
 
 export interface RuntimeStatus {
+  appVersion?: string;
   state: FSMState;
   stateReason: string;
   automationEnabled: boolean;

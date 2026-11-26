@@ -114,6 +114,12 @@ make verify
 # Chạy dịch vụ điều phối nền không giao diện (Headless Daemon)
 ./build/bin/michael-auto --headless
 
+# Điều khiển nhanh tiến trình đang chạy qua control.sock
+./build/bin/michael-auto --ctl status
+./build/bin/michael-auto --ctl pause
+./build/bin/michael-auto --ctl resume
+./build/bin/michael-auto --ctl quit
+
 # Xuất gói chẩn đoán ẩn danh (.tar.gz 0600, đã che toàn bộ PII/email/token)
 ./build/bin/michael-auto --export-diagnostics
 
@@ -121,9 +127,19 @@ make verify
 make install-desktop
 make install-systemd
 
+# Đóng gói nguồn offline cho Fedora RPM (kèm frontend/dist + Go vendor/) & release tarball
+make release-tarball
+make rpm-source
+
 # Gỡ cài đặt sạch user-space (GNOME extension, autostart, systemd unit, XDG venv)
 ./build/bin/michael-auto --uninstall
 ```
+
+## Tài liệu Pháp lý, Bảo mật & Phát hành
+
+- [CHANGELOG.md](CHANGELOG.md) — Lịch sử phát hành chuẩn Keep a Changelog
+- [SECURITY.md](SECURITY.md) — Chính sách bảo mật, cam kết Zero-Credential & quy trình báo cáo lỗ hổng
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — Ghi nhận bản quyền các thư viện mã nguồn mở
 
 ## Quyền riêng tư và bảo mật
 

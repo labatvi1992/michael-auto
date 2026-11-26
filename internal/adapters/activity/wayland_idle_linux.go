@@ -4,7 +4,6 @@ package activity
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,18 +27,31 @@ const (
 	gnomeScreenSaverIface = "org.gnome.ScreenSaver"
 )
 
+var defaultReconnectBackoff = []time.Duration{
+	1 * time.Second,
+	2 * time.Second,
+	5 * time.Second,
+	10 * time.Second,
+}
+
 // WaylandActivityMonitor monitors physical human input (mouse movement, click, scroll wheel, keyboard)
 // and GNOME Lock Screen / sleep state on Fedora 45 Wayland without root privileges or keylogging.
 type WaylandActivityMonitor struct {
-	mu              sync.Mutex
-	conn            *dbus.Conn
-	backend         string
-	leaseUntil      time.Time
-	activeWatchID   uint32
-	idleWatchID     uint32
-	closed          bool
-	activeExecution atomic.Bool
-	screenLocked    atomic.Bool
+	mu               sync.Mutex
+	conn             *dbus.Conn
+	backend          string
+	leaseUntil       time.Time
+	activeWatchID    uint32
+	idleWatchID      uint32
+	closed           bool
+	activeExecution  atomic.Bool
+	screenLocked     atomic.Bool
+	probeFn          func(ctx context.Context) (*dbus.Conn, string, error)
+	backoffSchedule  []time.Duration
+	reconnectAttempt int
+	lastProbeAttempt time.Time
+	logindStarted    bool
+	mutterEpoch      uint64
 }
 
 // IsScreenLocked reports whether the GNOME Wayland session screen shield / lock screen is active (P1-1).
@@ -53,31 +65,122 @@ func (m *WaylandActivityMonitor) SetScreenLockedForTesting(locked bool) {
 }
 
 // NewHumanActivityMonitor initializes the Fedora Wayland D-Bus activity monitor.
+// If GNOME Shell / Mutter is not yet ready at early boot, Subscribe() and SystemIdleDuration()
+// automatically reconnect lazily using exponential backoff (1s -> 2s -> 5s -> 10s).
 func NewHumanActivityMonitor() *WaylandActivityMonitor {
 	m := &WaylandActivityMonitor{
-		backend: "unavailable",
+		backend:         "unavailable",
+		backoffSchedule: defaultReconnectBackoff,
 	}
+	m.probeFn = m.connectAndProbeSessionBus
+	_, _ = m.tryReconnect(context.Background(), true)
+	return m
+}
+
+func (m *WaylandActivityMonitor) connectAndProbeSessionBus(ctx context.Context) (*dbus.Conn, string, error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return m
+		return nil, "unavailable", err
 	}
-	m.conn = conn
 
 	// Probe GNOME Mutter IdleMonitor first (default on Fedora Workstation 45).
 	var idleMs uint64
-	if err := conn.Object(mutterIdleDest, mutterIdlePath).Call(mutterIdleIface+".GetIdletime", 0).Store(&idleMs); err == nil {
-		m.backend = "wayland-mutter-idle-dbus"
-		return m
+	if err := conn.Object(mutterIdleDest, mutterIdlePath).CallWithContext(ctx, mutterIdleIface+".GetIdletime", 0).Store(&idleMs); err == nil {
+		return conn, "wayland-mutter-idle-dbus", nil
 	}
 
 	// Probe Freedesktop ScreenSaver (KDE Plasma / Sway / wlroots portals).
 	var idleSec uint32
-	if err := conn.Object(fdoScreenSaverDest, fdoScreenSaverPath).Call(fdoScreenSaverIface+".GetSessionIdleTime", 0).Store(&idleSec); err == nil {
-		m.backend = "wayland-freedesktop-screensaver"
-		return m
+	if err := conn.Object(fdoScreenSaverDest, fdoScreenSaverPath).CallWithContext(ctx, fdoScreenSaverIface+".GetSessionIdleTime", 0).Store(&idleSec); err == nil {
+		return conn, "wayland-freedesktop-screensaver", nil
 	}
 
-	return m
+	_ = conn.Close()
+	return nil, "unavailable", orchestrator.ErrIdleUnsupported
+}
+
+func (m *WaylandActivityMonitor) nextBackoffDuration(attempt int) time.Duration {
+	sched := m.backoffSchedule
+	if len(sched) == 0 {
+		sched = defaultReconnectBackoff
+	}
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt >= len(sched) {
+		return sched[len(sched)-1]
+	}
+	return sched[attempt]
+}
+
+// tryReconnect attempts to establish or re-establish the session D-Bus connection respecting exponential backoff.
+func (m *WaylandActivityMonitor) tryReconnect(ctx context.Context, force bool) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.tryReconnectLocked(ctx, force)
+}
+
+func (m *WaylandActivityMonitor) tryReconnectLocked(ctx context.Context, force bool) (bool, error) {
+	if m.closed || m.probeFn == nil {
+		return false, orchestrator.ErrIdleUnsupported
+	}
+	if m.backend != "unavailable" && (m.conn != nil || m.backend != "") {
+		return true, nil
+	}
+	if !force && !m.lastProbeAttempt.IsZero() {
+		wait := m.nextBackoffDuration(m.reconnectAttempt)
+		if time.Since(m.lastProbeAttempt) < wait {
+			return false, orchestrator.ErrIdleUnsupported
+		}
+	}
+	m.lastProbeAttempt = time.Now()
+	probe := m.probeFn
+	m.mu.Unlock()
+	conn, backend, err := probe(ctx)
+	m.mu.Lock()
+
+	if m.closed {
+		if conn != nil {
+			_ = conn.Close()
+		}
+		return false, orchestrator.ErrIdleUnsupported
+	}
+	if err != nil || backend == "" || backend == "unavailable" {
+		if conn != nil {
+			_ = conn.Close()
+		}
+		m.reconnectAttempt++
+		return false, orchestrator.ErrIdleUnsupported
+	}
+
+	if m.conn != nil && m.conn != conn {
+		_ = m.conn.Close()
+	}
+	m.conn = conn
+	m.backend = backend
+	m.reconnectAttempt = 0
+	m.activeWatchID = 0
+	m.idleWatchID = 0
+	m.mutterEpoch++
+	return true, nil
+}
+
+func (m *WaylandActivityMonitor) markDisconnected(failedConn *dbus.Conn) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
+	}
+	if failedConn != nil && m.conn != failedConn {
+		return
+	}
+	if m.conn != nil {
+		_ = m.conn.Close()
+		m.conn = nil
+	}
+	m.backend = "unavailable"
+	m.activeWatchID = 0
+	m.idleWatchID = 0
 }
 
 // SetActiveExecution switches high-frequency 80ms idle-regression polling on during active UI steps
@@ -123,11 +226,21 @@ func (m *WaylandActivityMonitor) inActuationLease() bool {
 }
 
 // SystemIdleDuration queries the Wayland compositor for exact duration without mouse/scroll/keyboard input.
+// Automatically attempts lazy D-Bus reconnection when the compositor becomes available post-boot.
 func (m *WaylandActivityMonitor) SystemIdleDuration(ctx context.Context) (time.Duration, error) {
 	m.mu.Lock()
 	conn := m.conn
 	backend := m.backend
 	m.mu.Unlock()
+
+	if conn == nil || backend == "unavailable" {
+		if ok, _ := m.tryReconnect(ctx, false); ok {
+			m.mu.Lock()
+			conn = m.conn
+			backend = m.backend
+			m.mu.Unlock()
+		}
+	}
 
 	if conn == nil || backend == "unavailable" {
 		return 0, orchestrator.ErrIdleUnsupported
@@ -138,6 +251,9 @@ func (m *WaylandActivityMonitor) SystemIdleDuration(ctx context.Context) (time.D
 		var idleMs uint64
 		call := conn.Object(mutterIdleDest, mutterIdlePath).CallWithContext(ctx, mutterIdleIface+".GetIdletime", 0)
 		if err := call.Store(&idleMs); err != nil {
+			if ctx.Err() == nil {
+				m.markDisconnected(conn)
+			}
 			return 0, err
 		}
 		return time.Duration(idleMs) * time.Millisecond, nil
@@ -146,6 +262,9 @@ func (m *WaylandActivityMonitor) SystemIdleDuration(ctx context.Context) (time.D
 		var idleMsOrSec uint32
 		call := conn.Object(fdoScreenSaverDest, fdoScreenSaverPath).CallWithContext(ctx, fdoScreenSaverIface+".GetSessionIdleTime", 0)
 		if err := call.Store(&idleMsOrSec); err != nil {
+			if ctx.Err() == nil {
+				m.markDisconnected(conn)
+			}
 			return 0, err
 		}
 		// Freedesktop ScreenSaver returns milliseconds on KDE/GNOME implementations.
@@ -156,19 +275,27 @@ func (m *WaylandActivityMonitor) SystemIdleDuration(ctx context.Context) (time.D
 }
 
 // Subscribe streams immediate ActivityCompositorAny events whenever physical mouse/wheel/click/keyboard input occurs.
+// Never permanently fails when started early at boot before GNOME Shell exports IdleMonitor; instead lazily
+// reconnects with exponential backoff (1s -> 2s -> 5s -> 10s) and arms Mutter + ScreenSaver signals automatically.
 func (m *WaylandActivityMonitor) Subscribe(ctx context.Context) (<-chan domain.ActivityKind, error) {
 	out := make(chan domain.ActivityKind, 16)
 
-	m.mu.Lock()
-	conn := m.conn
-	backend := m.backend
-	m.mu.Unlock()
+	attachIfMutter := func(attachedEpoch *uint64) {
+		m.mu.Lock()
+		conn := m.conn
+		backend := m.backend
+		epoch := m.mutterEpoch
+		startLogind := !m.logindStarted
+		if backend == "wayland-mutter-idle-dbus" && startLogind {
+			m.logindStarted = true
+		}
+		m.mu.Unlock()
 
-	if conn == nil || backend == "unavailable" {
-		return out, errors.New("wayland compositor idle D-Bus unavailable in current environment")
-	}
+		if backend != "wayland-mutter-idle-dbus" || conn == nil || epoch == *attachedEpoch {
+			return
+		}
+		*attachedEpoch = epoch
 
-	if backend == "wayland-mutter-idle-dbus" {
 		// Probe initial GNOME ScreenSaver lock state and subscribe to ActiveChanged(bool) (P1-1).
 		var initialLocked bool
 		if err := conn.Object(gnomeScreenSaverDest, gnomeScreenSaverPath).Call(gnomeScreenSaverIface+".GetActive", 0).Store(&initialLocked); err == nil {
@@ -189,14 +316,18 @@ func (m *WaylandActivityMonitor) Subscribe(ctx context.Context) (<-chan domain.A
 		conn.Signal(sigCh)
 		m.armMutterWatches()
 
-		go func() {
-			defer conn.RemoveSignal(sigCh)
+		go func(c *dbus.Conn, ch chan *dbus.Signal) {
+			defer c.RemoveSignal(ch)
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case sig, ok := <-sigCh:
-					if !ok || sig == nil || len(sig.Body) == 0 {
+				case sig, ok := <-ch:
+					if !ok {
+						m.markDisconnected(c)
+						return
+					}
+					if sig == nil || len(sig.Body) == 0 {
 						continue
 					}
 					if sig.Name == gnomeScreenSaverIface+".ActiveChanged" {
@@ -227,14 +358,21 @@ func (m *WaylandActivityMonitor) Subscribe(ctx context.Context) (<-chan domain.A
 					}
 				}
 			}
-		}()
+		}(conn, sigCh)
 
-		// Best-effort subscribe to systemd-logind PrepareForSleep(bool) on system bus to pause across suspend/resume.
-		go m.watchLogindSuspend(ctx)
+		if startLogind {
+			// Best-effort subscribe to systemd-logind PrepareForSleep(bool) on system bus to pause across suspend/resume.
+			go m.watchLogindSuspend(ctx)
+		}
 	}
 
-	// Secondary belt-and-suspenders detector: runs at 80ms during active execution (or on ScreenSaver backends),
-	// and relaxes to once per 2.4s while idle on event-driven GNOME Mutter WatchFired.
+	var attachedEpoch uint64
+	attachIfMutter(&attachedEpoch)
+
+	// Secondary belt-and-suspenders detector & lazy D-Bus reconnector:
+	// - When unavailable (early boot or compositor restart), retries with exponential backoff (1s->2s->5s->10s)
+	//   and automatically arms Mutter WatchFired + GNOME ScreenSaver ActiveChanged once available.
+	// - Runs at 80ms during active execution (or ScreenSaver backends), relaxes to 2.4s while idle on Mutter.
 	go func() {
 		defer close(out)
 		ticker := time.NewTicker(80 * time.Millisecond)
@@ -248,7 +386,18 @@ func (m *WaylandActivityMonitor) Subscribe(ctx context.Context) (<-chan domain.A
 				return
 			case <-ticker.C:
 				tickCounter++
-				if backend == "wayland-mutter-idle-dbus" && !m.activeExecution.Load() && tickCounter%30 != 0 {
+				m.mu.Lock()
+				curBackend := m.backend
+				m.mu.Unlock()
+
+				if curBackend == "unavailable" {
+					if ok, _ := m.tryReconnect(ctx, false); ok {
+						attachIfMutter(&attachedEpoch)
+					}
+					continue
+				}
+
+				if curBackend == "wayland-mutter-idle-dbus" && !m.activeExecution.Load() && tickCounter%30 != 0 {
 					continue
 				}
 				curIdle, err := m.SystemIdleDuration(ctx)
@@ -352,12 +501,17 @@ func (m *WaylandActivityMonitor) rearmUserActiveWatch() {
 func (m *WaylandActivityMonitor) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed || m.conn == nil {
+	if m.closed {
 		return nil
 	}
 	m.closed = true
+	if m.conn == nil {
+		return nil
+	}
 	if m.backend == "wayland-mutter-idle-dbus" && m.idleWatchID != 0 {
 		_ = m.conn.Object(mutterIdleDest, mutterIdlePath).Call(mutterIdleIface+".RemoveWatch", 0, m.idleWatchID).Err
 	}
-	return m.conn.Close()
+	err := m.conn.Close()
+	m.conn = nil
+	return err
 }

@@ -4,7 +4,7 @@ PYTHON ?= $(shell command -v python3.12 2>/dev/null || command -v python3.13 2>/
 SIDECAR_VENV := sidecar/.venv
 VERSION := 2.5.0
 
-.PHONY: all deps frontend sidecar test test-race build verify clean install-desktop install-systemd uninstall release-tarball
+.PHONY: all deps frontend sidecar test test-race build verify clean install-desktop install-systemd uninstall release-tarball rpm-source
 
 all: build
 
@@ -18,7 +18,7 @@ frontend:
 sidecar:
 	$(PYTHON) -m venv $(SIDECAR_VENV)
 	$(SIDECAR_VENV)/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true
-	$(SIDECAR_VENV)/bin/python -m pip install --only-binary=:all: "cua-driver==0.58.1"
+	$(SIDECAR_VENV)/bin/python -m pip install --only-binary=:all: --require-hashes -r sidecar/cua-driver-0.58.1.requirements.lock
 	$(SIDECAR_VENV)/bin/python -m pip install --no-deps ./sidecar
 
 test:
@@ -46,6 +46,8 @@ install-desktop: build
 	install -m 0755 ./build/bin/michael-auto $(HOME)/.local/bin/michael-auto
 	install -m 0644 packaging/icons/michael-auto.svg $(HOME)/.local/share/icons/hicolor/scalable/apps/michael-auto.svg
 	sed "s|Exec=michael-auto|Exec=$(HOME)/.local/bin/michael-auto|g" packaging/michael-auto.desktop > $(HOME)/.local/share/applications/michael-auto.desktop
+	gtk-update-icon-cache -q -t -f $(HOME)/.local/share/icons/hicolor 2>/dev/null || true
+	update-desktop-database $(HOME)/.local/share/applications 2>/dev/null || true
 
 install-systemd: install-desktop
 	mkdir -p $(HOME)/.config/systemd/user
@@ -61,6 +63,17 @@ release-tarball: build
 	mkdir -p dist
 	tar -czf dist/michael-auto-$(VERSION)-linux-amd64.tar.gz -C build/bin michael-auto -C ../../packaging michael-auto.desktop michael-auto.service icons/michael-auto.svg
 	sha256sum dist/michael-auto-$(VERSION)-linux-amd64.tar.gz > dist/SHA256SUMS.txt
+
+rpm-source: frontend
+	mkdir -p dist
+	rm -rf dist/michael-auto-$(VERSION)
+	mkdir -p dist/michael-auto-$(VERSION)
+	git archive HEAD | tar -x -C dist/michael-auto-$(VERSION)
+	cp -r frontend/dist dist/michael-auto-$(VERSION)/frontend/dist
+	(cd dist/michael-auto-$(VERSION) && go mod vendor)
+	tar -czf dist/michael-auto-$(VERSION)-source.tar.gz -C dist michael-auto-$(VERSION)
+	rm -rf dist/michael-auto-$(VERSION)
+	sha256sum dist/michael-auto-$(VERSION)-source.tar.gz >> dist/SHA256SUMS.txt
 
 clean:
 	rm -rf build/bin dist frontend/dist coverage.out $(SIDECAR_VENV) sidecar/*.egg-info sidecar/dist

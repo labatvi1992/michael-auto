@@ -392,10 +392,135 @@ func TestInstanceGuardSingleInstanceFlockAndUnixSocketWindowWakeup(t *testing.T)
 	if err2 != nil || acquired2 {
 		t.Fatalf("expected secondary InstanceGuard to detect existing daemon (acquired=false), got acquired=%v err=%v", acquired2, err2)
 	}
+	if reply := secondary.LastWakeReply(); reply != "ok:gui" {
+		t.Fatalf("expected ok:gui reply from GUI primary, got %q", reply)
+	}
 
 	select {
 	case <-wokenCh:
 	case <-time.After(1500 * time.Millisecond):
 		t.Fatal("expected primary onShowWindow callback woken via UNIX domain socket")
 	}
+
+	// Verify headless mode reports ok:headless + control commands (status/pause/resume/quit) cleanly!
+	headlessDir := t.TempDir()
+	headless := NewInstanceGuard(headlessDir)
+	defer headless.Close()
+	if acq, err := headless.AcquireWithoutWake(); err != nil || !acq {
+		t.Fatalf("headless AcquireWithoutWake failed: acq=%v err=%v", acq, err)
+	}
+	headless.SetControlCallback(func(cmd string) string {
+		return "ok:headless:" + cmd
+	})
+
+	guiAttempt := NewInstanceGuard(headlessDir)
+	defer guiAttempt.Close()
+	if acq, err := guiAttempt.AcquireOrWakeExisting(nil); err != nil || acq {
+		t.Fatalf("expected GUI launch to yield to headless daemon, got acq=%v err=%v", acq, err)
+	}
+	if reply := guiAttempt.LastWakeReply(); reply != "ok:headless" {
+		t.Fatalf("expected ok:headless reply so Desktop launcher displays notification instead of silent black hole, got %q", reply)
+	}
+	if statusReply, err := guiAttempt.SendCommand("status"); err != nil || statusReply != "ok:headless:status" {
+		t.Fatalf("expected ok:headless:status, got %q (err=%v)", statusReply, err)
+	}
+	if unknownReply, err := guiAttempt.SendCommand("bogus"); err != nil || unknownReply != "err:unknown-command" {
+		t.Fatalf("expected err:unknown-command, got %q (err=%v)", unknownReply, err)
+	}
+}
+
+func TestEvidenceDownscaleLargePNGAndAuditClearAndSecretFallback(t *testing.T) {
+	// 1. OptimizeEvidencePNG & MaskPNGEditorRects must downscale oversized (>1600px, >=128KB) PNGs cleanly.
+	wide := image.NewNRGBA(image.Rect(0, 0, 2000, 1000))
+	for y := 0; y < 1000; y++ {
+		for x := 0; x < 2000; x++ {
+			off := wide.PixOffset(x, y)
+			wide.Pix[off+0] = uint8((x*7 + y*13) & 0xff)
+			wide.Pix[off+1] = uint8((x*3 ^ y*11) & 0xff)
+			wide.Pix[off+2] = uint8((x*17 + y*5) & 0xff)
+			wide.Pix[off+3] = 255
+		}
+	}
+	var wideBuf bytes.Buffer
+	enc := png.Encoder{CompressionLevel: png.NoCompression}
+	if err := enc.Encode(&wideBuf, wide); err != nil {
+		t.Fatal(err)
+	}
+	optimized := OptimizeEvidencePNG(wideBuf.Bytes())
+	dec, err := png.Decode(bytes.NewReader(optimized))
+	if err != nil {
+		t.Fatalf("decode optimized PNG failed: %v", err)
+	}
+	if dec.Bounds().Dx() != 1600 || dec.Bounds().Dy() != 800 {
+		t.Fatalf("expected downscaled 1600x800 PNG, got %dx%d", dec.Bounds().Dx(), dec.Bounds().Dy())
+	}
+
+	// 2. AuditLogger.Clear() truncates the JSONL file cleanly.
+	logPath := filepath.Join(t.TempDir(), "clear-audit.jsonl")
+	al := NewJSONLAuditLogger(logPath)
+	al.Log(domain.AuditEntry{Timestamp: time.Now(), Level: domain.AuditInfo, Event: "ev1", Message: "hello"})
+	if err := al.Clear(); err != nil {
+		t.Fatalf("AuditLogger.Clear failed: %v", err)
+	}
+	recs, err := al.Recent(10)
+	if err != nil || len(recs) != 0 {
+		t.Fatalf("expected 0 logs after Clear, got %d (err=%v)", len(recs), err)
+	}
+	_ = al.Close()
+
+	// 3. FreedesktopSecretStore falls back safely to memory when Secret Service is unavailable.
+	ss := NewSecretStore()
+	ss.getFn = func(key string) (string, error) { return "", os.ErrNotExist }
+	ss.setFn = func(key, value string) error { return os.ErrPermission }
+	ss.delFn = func(key string) error { return nil }
+
+	if err := ss.Set("tok_key", "secret_val"); err != nil {
+		t.Fatalf("Set fallback failed: %v", err)
+	}
+	if ss.Backend() != "memory-fallback" {
+		t.Fatalf("expected memory-fallback backend, got %q", ss.Backend())
+	}
+	got, err := ss.Get("tok_key")
+	if err != nil || got != "secret_val" {
+		t.Fatalf("expected fallback secret_val, got %q (err=%v)", got, err)
+	}
+	_ = ss.Delete("tok_key")
+	if _, err := ss.Get("tok_key"); err == nil {
+		t.Fatal("expected error after Delete")
+	}
+
+	// 4. Verify XDG path helpers, Path() getters, SetRetentionRuns & SetShowWindowCallback.
+	tmpXDG := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpXDG, "cfg"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpXDG, "state"))
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(tmpXDG, "run"))
+
+	if p := DefaultXDGConfigPath(); !strings.Contains(p, filepath.Join("cfg", "michael-auto", "config.json")) {
+		t.Fatalf("unexpected DefaultXDGConfigPath: %q", p)
+	}
+	if p := DefaultXDGEvidenceRoot(); !strings.Contains(p, filepath.Join("state", "michael-auto", "evidence")) {
+		t.Fatalf("unexpected DefaultXDGEvidenceRoot: %q", p)
+	}
+	if p := DefaultEphemeralIntentPath(); !strings.Contains(p, filepath.Join("run", "michael-auto", "pending_intent.json")) {
+		t.Fatalf("unexpected DefaultEphemeralIntentPath: %q", p)
+	}
+	if NewFileConfigStore("").Path() == "" || NewJSONLAuditLogger("").Path() == "" || NewEphemeralIntentStore("").Path() == "" {
+		t.Fatal("expected non-empty default store paths")
+	}
+	ev := NewEvidenceVault("", 5)
+	ev.SetRetentionRuns(15)
+	_, _ = ev.SaveEvidence("r_list_1", "step1", []byte("png1"), domain.EvidenceRecord{WindowTitle: "W1"})
+	_, _ = ev.SaveEvidence("r_list_2", "step2", []byte("png2"), domain.EvidenceRecord{WindowTitle: "W2"})
+	if list, err := ev.ListRecent(10); err != nil || len(list) != 2 {
+		t.Fatalf("expected 2 listed evidence records, got %d (err=%v)", len(list), err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	if DefaultXDGConfigPath() == "" || DefaultXDGEvidenceRoot() == "" || DefaultEphemeralIntentPath() == "" {
+		t.Fatal("expected valid home fallback XDG paths")
+	}
+	ig := NewInstanceGuard(filepath.Join(tmpXDG, "ig"))
+	ig.SetShowWindowCallback(func() {})
+	_ = ig.Close()
 }

@@ -127,6 +127,7 @@ func NewApp(customConfigPath, customAuditPath string, enableTray bool) (*App, er
 		Notifier:           notifier,
 		Publisher:          app,
 	})
+	app.orch.SetAppVersion(AppVersion)
 	if cfgLoadErr != nil {
 		app.orch.SetConfigWarning("Cấu hình cũ không hợp lệ (đã tự động sao lưu trước khi khôi phục mặc định): " + auditLogger.RedactString(cfgLoadErr.Error()))
 	}
@@ -188,6 +189,52 @@ func (a *App) ShowMainWindow() {
 	if ctx != nil {
 		wailsruntime.WindowShow(ctx)
 		wailsruntime.WindowUnminimise(ctx)
+	}
+}
+
+// QuitApplication terminates the Wails application cleanly bypassing hide-on-close.
+func (a *App) QuitApplication() {
+	a.mu.Lock()
+	a.forceQuit = true
+	ctx := a.wailsCtx
+	a.mu.Unlock()
+	if ctx != nil {
+		wailsruntime.Quit(ctx)
+	}
+}
+
+// HandleControlCommand serves control.sock commands ("status", "pause", "resume", "quit") for GUI and headless daemons.
+func (a *App) HandleControlCommand(cmd, mode string, cancelHeadless context.CancelFunc) string {
+	switch strings.TrimSpace(cmd) {
+	case "status":
+		st := a.orch.Status(context.Background())
+		return fmt.Sprintf("ok:%s state=%s automation=%v dry_run=%v profile=%s",
+			mode, st.State, st.AutomationEnabled, st.DryRunActuation, st.ActiveProfileID)
+	case "pause":
+		if err := a.orch.SetAutomationEnabled(false); err != nil {
+			return "err:" + err.Error()
+		}
+		return "ok:paused"
+	case "resume":
+		if err := a.orch.SetAutomationEnabled(true); err != nil {
+			return "err:" + err.Error()
+		}
+		return "ok:resumed"
+	case "quit":
+		if cancelHeadless != nil {
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				cancelHeadless()
+			}()
+		} else {
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				a.QuitApplication()
+			}()
+		}
+		return "ok:quitting"
+	default:
+		return "err:unknown-command"
 	}
 }
 
@@ -273,6 +320,14 @@ func (a *App) SaveConfig(cfg domain.AppConfig) error {
 	if a.evidenceStore != nil {
 		a.evidenceStore.SetRetentionRuns(cfg.CuaDriver.EvidenceRetentionRuns)
 	}
+	var activeAct ports.DesktopActuator = a.portalFallback
+	if cfg.CuaDriver.Enabled && a.cuaImpl != nil {
+		activeAct = a.cuaImpl
+	}
+	a.mu.Lock()
+	a.actuator = activeAct
+	a.mu.Unlock()
+	a.orch.SetPrimaryActuator(activeAct)
 	return a.orch.UpdateConfig(cfg)
 }
 
@@ -351,6 +406,7 @@ Icon=michael-auto
 Terminal=false
 Categories=Utility;Development;
 StartupNotify=false
+StartupWMClass=michael-auto
 X-GNOME-Autostart-enabled=true
 `, exePath)
 	return os.WriteFile(p, []byte(entry), 0o600)

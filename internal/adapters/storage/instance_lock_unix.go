@@ -19,13 +19,15 @@ import (
 // UNIX domain control socket so launching `michael-auto` a second time on GNOME Wayland cleanly
 // wakes and raises the existing hidden window instead of spawning a split-brain second daemon.
 type InstanceGuard struct {
-	mu           sync.Mutex
-	lockPath     string
-	sockPath     string
-	lockFile     *os.File
-	listener     net.Listener
-	onShowWindow func()
-	closed       bool
+	mu            sync.Mutex
+	lockPath      string
+	sockPath      string
+	lockFile      *os.File
+	listener      net.Listener
+	onShowWindow  func()
+	onControl     func(cmd string) string
+	lastWakeReply string
+	closed        bool
 }
 
 // DefaultInstanceRuntimePaths returns ($XDG_RUNTIME_DIR/michael-auto/daemon.lock, control.sock).
@@ -65,11 +67,45 @@ func (g *InstanceGuard) SetShowWindowCallback(fn func()) {
 	g.onShowWindow = fn
 }
 
+// SetControlCallback registers a handler for runtime control commands ("status", "pause", "resume", "quit").
+func (g *InstanceGuard) SetControlCallback(fn func(cmd string) string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.onControl = fn
+}
+
+// LastWakeReply returns the reply received from the running instance when lock acquisition yielded.
+// For "show-window", a GUI instance replies "ok:gui" while a headless daemon replies "ok:headless".
+func (g *InstanceGuard) LastWakeReply() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.lastWakeReply
+}
+
+// SendCommand sends a single-line control command to an already-running instance over control.sock.
+func (g *InstanceGuard) SendCommand(command string) (string, error) {
+	g.mu.Lock()
+	sockPath := g.sockPath
+	g.mu.Unlock()
+	return sendControlCommand(sockPath, command)
+}
+
 // AcquireOrWakeExisting attempts to acquire the exclusive daemon lock.
 // If another instance already holds the lock, it sends "show-window" to the running instance and returns acquired=false.
 func (g *InstanceGuard) AcquireOrWakeExisting(onShowWindow func()) (bool, error) {
+	return g.acquireWithFallbackCommand(onShowWindow, "show-window")
+}
+
+// AcquireWithoutWake attempts to acquire the exclusive daemon lock without popping up an existing GUI window.
+// If another instance already holds the lock, it queries "status" over control.sock and returns acquired=false.
+func (g *InstanceGuard) AcquireWithoutWake() (bool, error) {
+	return g.acquireWithFallbackCommand(nil, "status")
+}
+
+func (g *InstanceGuard) acquireWithFallbackCommand(onShowWindow func(), fallbackCmd string) (bool, error) {
 	g.mu.Lock()
 	g.onShowWindow = onShowWindow
+	g.lastWakeReply = ""
 	lockPath := g.lockPath
 	sockPath := g.sockPath
 	g.mu.Unlock()
@@ -86,7 +122,12 @@ func (g *InstanceGuard) AcquireOrWakeExisting(onShowWindow func()) (bool, error)
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
-			_ = sendWakeupCommand(sockPath, "show-window")
+			if fallbackCmd != "" {
+				reply, _ := sendControlCommand(sockPath, fallbackCmd)
+				g.mu.Lock()
+				g.lastWakeReply = strings.TrimSpace(reply)
+				g.mu.Unlock()
+			}
 			return false, nil
 		}
 		return false, fmt.Errorf("khóa flock %s lỗi: %w", lockPath, err)
@@ -118,33 +159,67 @@ func (g *InstanceGuard) acceptControlLoop(ln net.Listener) {
 		}
 		go func(c net.Conn) {
 			defer c.Close()
-			_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_ = c.SetDeadline(time.Now().Add(2 * time.Second))
 			scanner := bufio.NewScanner(c)
-			if scanner.Scan() {
-				cmd := strings.TrimSpace(scanner.Text())
-				if cmd == "show-window" {
-					g.mu.Lock()
-					cb := g.onShowWindow
-					g.mu.Unlock()
-					if cb != nil {
-						cb()
-					}
-					_, _ = c.Write([]byte("ok\n"))
-				}
+			if !scanner.Scan() {
+				return
 			}
+			cmd := strings.TrimSpace(scanner.Text())
+			g.mu.Lock()
+			cb := g.onShowWindow
+			ctrl := g.onControl
+			g.mu.Unlock()
+
+			var reply string
+			switch cmd {
+			case "show-window":
+				if cb != nil {
+					cb()
+					reply = "ok:gui"
+				} else {
+					reply = "ok:headless"
+				}
+			case "status", "pause", "resume", "quit":
+				if ctrl != nil {
+					reply = strings.TrimSpace(ctrl(cmd))
+					if reply == "" {
+						reply = "ok"
+					}
+				} else if cmd == "status" {
+					if cb != nil {
+						reply = "ok:gui"
+					} else {
+						reply = "ok:headless"
+					}
+				} else {
+					reply = "unsupported"
+				}
+			default:
+				reply = "err:unknown-command"
+			}
+			_, _ = c.Write([]byte(reply + "\n"))
 		}(conn)
 	}
 }
 
-func sendWakeupCommand(sockPath, command string) error {
+func sendControlCommand(sockPath, command string) (string, error) {
 	conn, err := net.DialTimeout("unix", sockPath, 1500*time.Millisecond)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(1500 * time.Millisecond))
-	_, err = conn.Write([]byte(command + "\n"))
-	return err
+	if _, err := conn.Write([]byte(strings.TrimSpace(command) + "\n")); err != nil {
+		return "", err
+	}
+	scanner := bufio.NewScanner(conn)
+	if scanner.Scan() {
+		return strings.TrimSpace(scanner.Text()), nil
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	return "", nil
 }
 
 // Close releases the UNIX control socket and kernel flock cleanly.

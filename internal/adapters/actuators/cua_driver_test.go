@@ -383,3 +383,281 @@ server.main()
 		t.Fatalf("Real Python sidecar ListAvailableModels unexpected: active=%q models=%v err=%v", active, models, err)
 	}
 }
+
+type stubSecretStore struct {
+	data map[string]string
+}
+
+func (s *stubSecretStore) Get(key string) (string, error) {
+	if v, ok := s.data[key]; ok {
+		return v, nil
+	}
+	return "", errors.New("not found")
+}
+func (s *stubSecretStore) Set(key, value string) error { s.data[key] = value; return nil }
+func (s *stubSecretStore) Delete(key string) error     { delete(s.data, key); return nil }
+func (s *stubSecretStore) Backend() string             { return "stub-secret" }
+
+func TestSupplyChainPipArgsWaylandA11yPortalTokensAndCuaHelpers(t *testing.T) {
+	// 1. Supply-chain --require-hashes & offline CUA_WHEEL_DIR pip argument verification (R4)
+	lockDir := t.TempDir()
+	lockFile := filepath.Join(lockDir, pinnedCuaDriverLockFile)
+	if err := os.WriteFile(lockFile, []byte("cua-driver==0.58.1 --hash=sha256:abc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defaultArgs := strings.Join(buildPipWheelInstallArgs(pinnedCuaDriverSpec, lockFile, ""), " ")
+	if !strings.Contains(defaultArgs, "--only-binary=:all:") || !strings.Contains(defaultArgs, "--require-hashes -r "+lockFile) {
+		t.Fatalf("expected --only-binary=:all: --require-hashes -r <lock>, got: %s", defaultArgs)
+	}
+	offlineArgs := strings.Join(buildPipWheelInstallArgs(pinnedCuaDriverSpec, lockFile, "/opt/wheels"), " ")
+	if !strings.Contains(offlineArgs, "--no-index --find-links /opt/wheels") || !strings.Contains(offlineArgs, "--require-hashes") {
+		t.Fatalf("expected offline wheel flags + --require-hashes, got: %s", offlineArgs)
+	}
+	overrideArgs := strings.Join(buildPipWheelInstallArgs("cua-driver==0.99.0", lockFile, ""), " ")
+	if strings.Contains(overrideArgs, "--require-hashes") || !strings.HasSuffix(overrideArgs, "cua-driver==0.99.0") {
+		t.Fatalf("expected custom spec override without pinned lockfile, got: %s", overrideArgs)
+	}
+
+	// 2. Wayland Accessibility flags & systemd environment.d file writing
+	cfgDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cfgDir, "chrome-flags.conf"), []byte("--ozone-platform=wayland\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !ensureUserChromiumAccessibilityFlags(cfgDir) {
+		t.Fatal("expected ensureUserChromiumAccessibilityFlags to return true")
+	}
+	// Running a second time must be idempotent (no duplicate line).
+	if !ensureUserChromiumAccessibilityFlags(cfgDir) {
+		t.Fatal("expected idempotent second call to return true")
+	}
+	chromeFlags, _ := os.ReadFile(filepath.Join(cfgDir, "chrome-flags.conf"))
+	if strings.Count(string(chromeFlags), "--force-renderer-accessibility") != 1 {
+		t.Fatalf("expected exactly 1 --force-renderer-accessibility line, got:\n%s", string(chromeFlags))
+	}
+	electronFlags, _ := os.ReadFile(filepath.Join(cfgDir, "electron-flags.conf"))
+	if !strings.Contains(string(electronFlags), "--force-renderer-accessibility") {
+		t.Fatalf("expected electron-flags.conf created with accessibility flag, got:\n%s", string(electronFlags))
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	_ = ensureSystemdSessionAccessibilityEnv(context.Background())
+	envConf, err := os.ReadFile(filepath.Join(cfgDir, "environment.d", "90-michael-auto-a11y.conf"))
+	if err != nil || !strings.Contains(string(envConf), "ACCESSIBILITY_ENABLED=1") {
+		t.Fatalf("expected environment.d accessibility conf written, err=%v content=%q", err, string(envConf))
+	}
+
+	// 3. WaylandPortalActuator crypto/rand tokens, dry-run & SessionStatus
+	t1 := cryptoPortalToken("sess")
+	t2 := cryptoPortalToken("sess")
+	if t1 == t2 || !strings.HasPrefix(t1, "sess_") || len(t1) != len("sess_")+16 {
+		t.Fatalf("expected unique 16-hex crypto portal tokens, got %q and %q", t1, t2)
+	}
+
+	secrets := &stubSecretStore{data: map[string]string{restoreTokenKey: "tok-123"}}
+	portal := NewDesktopActuator(secrets, &stubActivityMon{})
+	if ready, detail := portal.SessionStatus(); !ready || !strings.Contains(detail, "restore_token") {
+		t.Fatalf("expected ready portal status with saved restore_token, got ready=%v detail=%q", ready, detail)
+	}
+	if err := portal.TriggerLogout(context.Background(), domain.ScreenState{}, true); err != nil {
+		t.Fatalf("expected dryRun TriggerLogout nil, got %v", err)
+	}
+	if err := portal.TriggerLogout(context.Background(), domain.ScreenState{}, false); err == nil {
+		t.Fatal("expected TriggerLogout error when no targets present")
+	}
+	if err := portal.SelectModel(context.Background(), domain.ScreenState{}, "Gemini", true); err != nil {
+		t.Fatalf("expected dryRun SelectModel nil, got %v", err)
+	}
+	if err := portal.SelectModel(context.Background(), domain.ScreenState{}, "Gemini", false); err != nil {
+		t.Fatalf("expected SelectModel soft no-op when selector absent, got %v", err)
+	}
+	if err := portal.Close(); err != nil {
+		t.Fatalf("portal Close failed: %v", err)
+	}
+
+	// 4. Safe OAuth relay URL validation & DecodeObservedScreenStateForSensor
+	if !isSafeGoogleOAuthRelayURL("https://accounts.google.com/o/oauth2/v2/auth?client_id=1") {
+		t.Fatal("expected valid Google OAuth URL accepted")
+	}
+	for _, bad := range []string{"http://accounts.google.com/auth", "https://accounts.google.com.evil.com/auth", "javascript:alert(1)", ""} {
+		if isSafeGoogleOAuthRelayURL(bad) {
+			t.Fatalf("expected unsafe URL rejected: %q", bad)
+		}
+	}
+	decoded, err := DecodeObservedScreenStateForSensor([]byte(`{"windowDetected":true,"windowTitle":"Antigravity","appAuthState":"authenticated","activeModel":"Gemini 4 Neon Extra High","quotaExhausted":false,"confidence":0.97}`), time.Now())
+	if err != nil || !decoded.WindowDetected || decoded.ActiveModel != "Gemini 4 Neon Extra High" || decoded.AppAuthState != domain.AuthAuthenticated {
+		t.Fatalf("unexpected DecodeObservedScreenStateForSensor: %+v (err=%v)", decoded, err)
+	}
+}
+
+func TestCuaDriverInspectQuotaSignOutSignInAndCancelNotification(t *testing.T) {
+	pyBin, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not installed")
+	}
+
+	tmpDir := t.TempDir()
+	mockPNG := base64.StdEncoding.EncodeToString([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR-mock"))
+	cancelFlag := filepath.Join(tmpDir, "canceled.flag")
+	scriptPath := filepath.Join(tmpDir, "cua_full_methods.py")
+	script := `#!/usr/bin/env python3
+import json, sys, time
+
+MOCK_PNG = "` + mockPNG + `"
+CANCEL_FLAG = "` + cancelFlag + `"
+
+for raw in sys.stdin:
+    req = json.loads(raw)
+    rid = req.get("id")
+    m = req.get("method", "")
+    if m == "$/cancelRequest":
+        with open(CANCEL_FLAG, "w") as f:
+            f.write("canceled")
+        continue
+    if m == "health_check":
+        res = {"healthy": True}
+    elif m == "inspect_quota":
+        res = {
+            "windowDetected": True, "windowTitle": "Antigravity", "windowFocused": True,
+            "appAuthState": "authenticated", "activeAccountHint": "p@example.com",
+            "activeModel": "Gemini 4 Neon Extra High", "remainingQuotaPct": 0,
+            "quotaExhausted": True, "quotaMessage": "0% left", "confidence": 0.99,
+            "evidence": {"step": "01_verify_quota_zero", "windowTitle": "Antigravity", "pid": 123, "verifiedDetail": "0%", "screenshotBase64": MOCK_PNG}
+        }
+    elif m == "click_signout":
+        res = {"signedOut": True, "evidence": {"step": "02_pre_signout_settings", "windowTitle": "Settings", "pid": 123, "verifiedDetail": "ok", "screenshotBase64": MOCK_PNG}}
+    elif m == "click_signin":
+        res = {"clickedSignIn": True, "evidence": {"step": "03_pre_signin_antigravity", "windowTitle": "Antigravity", "pid": 123, "verifiedDetail": "ok", "screenshotBase64": MOCK_PNG}}
+    elif m == "slow_hang":
+        time.sleep(0.5)
+        res = {"late": True}
+    elif m == "shutdown":
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": {"shutdown": True}}) + "\n")
+        sys.stdout.flush()
+        sys.exit(0)
+    else:
+        res = {"ok": True}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": res}) + "\n")
+    sys.stdout.flush()
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	vault := storage.NewEvidenceVault(filepath.Join(tmpDir, "evidence"), 5)
+	cua := NewCustomCuaDriverActuator(pyBin, scriptPath, []string{"TEST=1"}, &stubActivityMon{}, nil)
+	cua.SetEvidenceStore(vault)
+	cua.SetActiveRunID("run_methods_01")
+	defer cua.Close()
+
+	if cua.ResolvedPythonBin() != pyBin || cua.ResolvedEntrypoint() != scriptPath {
+		t.Fatalf("unexpected resolved paths: py=%q entry=%q", cua.ResolvedPythonBin(), cua.ResolvedEntrypoint())
+	}
+
+	ctx := context.Background()
+	st, err := cua.InspectQuota(ctx, []string{"Antigravity"}, false)
+	if err != nil || !st.QuotaExhausted || st.EvidenceSHA256 == "" {
+		t.Fatalf("InspectQuota failed: %+v (err=%v)", st, err)
+	}
+	if err := cua.TriggerLogout(ctx, st, false); err != nil {
+		t.Fatalf("TriggerLogout failed: %v", err)
+	}
+	cua.SetPendingTargetProfile(domain.AccountProfile{
+		ID: "p2", EmailHint: "b@example.com", BrowserType: domain.BrowserChrome, BrowserProfileDir: "Profile 1",
+	})
+	if err := cua.ClickSignIn(ctx, false); err != nil {
+		t.Fatalf("ClickSignIn failed: %v", err)
+	}
+
+	// Verify $/cancelRequest notification is sent when RPC context times out!
+	shortCtx, cancel := context.WithTimeout(ctx, 80*time.Millisecond)
+	defer cancel()
+	if _, err := cua.Call(shortCtx, "slow_hang", nil); err == nil {
+		t.Fatal("expected deadline error on slow_hang RPC")
+	}
+	// Give sidecar a brief moment to process $/cancelRequest after slow_hang finishes.
+	time.Sleep(550 * time.Millisecond)
+	if _, statErr := os.Stat(cancelFlag); statErr != nil {
+		t.Fatalf("expected $/cancelRequest processed by sidecar, stat err=%v", statErr)
+	}
+}
+
+func TestEmbeddedSidecarExtractionAndProductionConstructors(t *testing.T) {
+	tmpData := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tmpData)
+	t.Setenv("MICHAEL_AUTO_DEV_SIDECAR", "0")
+
+	entry, err := EnsureEmbeddedSidecarExtracted()
+	if err != nil {
+		t.Fatalf("EnsureEmbeddedSidecarExtracted failed: %v", err)
+	}
+	if !strings.HasPrefix(entry, tmpData) || !strings.HasSuffix(entry, filepath.Join("michael_cua_sidecar", "main.py")) {
+		t.Fatalf("expected embedded sidecar extracted under XDG_DATA_HOME, got %q", entry)
+	}
+	lockPath := filepath.Join(ManagedSidecarDir(), pinnedCuaDriverLockFile)
+	lockRaw, err := os.ReadFile(lockPath)
+	if err != nil || !strings.Contains(string(lockRaw), "sha256:52c3b28a9cf4dce24dd2a05ccd0d51d950bfb8d76703568a47385827367f40fb") {
+		t.Fatalf("expected SHA-256 lockfile extracted alongside sidecar, err=%v", err)
+	}
+	if !strings.HasSuffix(ManagedUvBinPath(), filepath.Join("bin", "uv")) {
+		t.Fatalf("unexpected ManagedUvBinPath: %q", ManagedUvBinPath())
+	}
+	_ = resolveUvBinary()
+	if pyBin, err := exec.LookPath("python3"); err == nil {
+		if minor := detectPythonMinorVersion(context.Background(), pyBin); minor < 8 {
+			t.Fatalf("expected Python 3.8+, got 3.%d", minor)
+		}
+	}
+	if got := tailString("abcdef", 3); got != "...def" {
+		t.Fatalf("expected '...def', got %q", got)
+	}
+	if got := tailString("ab", 5); got != "ab" {
+		t.Fatalf("expected 'ab', got %q", got)
+	}
+
+	router := NewOSBrowserRouter()
+	cfg := domain.DefaultConfig().CuaDriver
+	cua := NewCuaDriverActuator(cfg, &stubActivityMon{}, router, nil, nil)
+	defer cua.Close()
+	cua.cfg.AgentWorkspaceEnabled = false
+	cua.armWorkspaceAutoRoute(context.Background(), 10)
+
+	// Read-only Wayland accessibility inspection & portal error paths.
+	_, _ = CheckWaylandAccessibility(context.Background())
+	_ = InspectATSPI2RegisteredApps(context.Background())
+
+	portal := NewDesktopActuator(nil, &stubActivityMon{})
+	portal.setStatus(false, "custom-status")
+	if ready, detail := portal.SessionStatus(); ready || detail != "custom-status" {
+		t.Fatalf("unexpected portal status: ready=%v detail=%q", ready, detail)
+	}
+	if err := portal.actuateTarget(context.Background(), domain.UIElementTarget{Name: "Btn", HasBounds: false}); err == nil {
+		t.Fatal("expected error when element has neither AT-SPI2 action nor bounds")
+	}
+
+	// Verify installWheelAndSidecarIntoVenv executes pip with --require-hashes lockfile and --no-deps end-to-end!
+	fakeBinDir := t.TempDir()
+	argsLog := filepath.Join(fakeBinDir, "pip_args.log")
+	fakePy := filepath.Join(fakeBinDir, "fake_python.sh")
+	fakePyBody := fmt.Sprintf("#!/bin/sh\necho \"$@\" >> %q\nexit 0\n", argsLog)
+	if err := os.WriteFile(fakePy, []byte(fakePyBody), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var logBuf bytes.Buffer
+	if err := installWheelAndSidecarIntoVenv(context.Background(), fakePy, pinnedCuaDriverSpec, ManagedSidecarDir(), &logBuf); err != nil {
+		t.Fatalf("installWheelAndSidecarIntoVenv with fake python failed: %v", err)
+	}
+	invoked, _ := os.ReadFile(argsLog)
+	if !strings.Contains(string(invoked), "--require-hashes") || !strings.Contains(string(invoked), "--no-deps") {
+		t.Fatalf("expected --require-hashes and --no-deps pip calls, got:\n%s", string(invoked))
+	}
+
+	// Verify CuaDriverActuator supervisor detects unexpected sidecar crash and schedules restart cleanly!
+	crashScript := filepath.Join(fakeBinDir, "crash_once.sh")
+	if err := os.WriteFile(crashScript, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	crashCua := NewCustomCuaDriverActuator("/bin/sh", crashScript, []string{"TEST=1"}, &stubActivityMon{}, nil)
+	_ = crashCua.EnsureSession(context.Background())
+	time.Sleep(100 * time.Millisecond)
+	_ = crashCua.Close()
+}

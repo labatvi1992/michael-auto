@@ -63,9 +63,10 @@ type Orchestrator struct {
 	yieldCtrl *HumanYieldController
 	consensus *MultiFrameConsensus
 	breaker   *SafetyBreaker
-	policy    *PolicyEngine
-	nowFunc   func() time.Time
-	display   string
+	policy     *PolicyEngine
+	nowFunc    func() time.Time
+	display    string
+	appVersion string
 }
 
 // NewOrchestrator wires all domain engines, restores any non-expired PendingIntent from tmpfs,
@@ -81,6 +82,7 @@ func NewOrchestrator(cfg domain.AppConfig, deps Dependencies) *Orchestrator {
 		policy:      NewPolicyEngine(),
 		nowFunc:     time.Now,
 		display:     detectDisplayServer(),
+		appVersion:  "2.5.0",
 	}
 	if !cfg.AutomationEnabled {
 		o.state = domain.StatePausedByUser
@@ -181,6 +183,23 @@ func (o *Orchestrator) isScreenLocked() bool {
 // InvalidateHealthCache forces the next Status() snapshot to refresh SensorHealth and AgentWorkspaceStatus.
 func (o *Orchestrator) InvalidateHealthCache() {
 	o.mu.Lock()
+	o.healthCheckedAt = time.Time{}
+	o.mu.Unlock()
+}
+
+// SetAppVersion sets the application version string exposed in RuntimeStatus telemetry.
+func (o *Orchestrator) SetAppVersion(version string) {
+	o.mu.Lock()
+	if strings.TrimSpace(version) != "" {
+		o.appVersion = strings.TrimSpace(version)
+	}
+	o.mu.Unlock()
+}
+
+// SetPrimaryActuator hot-swaps the active DesktopActuator when the user toggles CuaDriver.Enabled at runtime.
+func (o *Orchestrator) SetPrimaryActuator(act ports.DesktopActuator) {
+	o.mu.Lock()
+	o.deps.DesktopActuator = act
 	o.healthCheckedAt = time.Time{}
 	o.mu.Unlock()
 }
@@ -537,11 +556,19 @@ func (o *Orchestrator) Status(ctx context.Context) domain.RuntimeStatus {
 
 	portalReady := false
 	portalDetail := "Chưa khởi tạo adapter"
-	if o.deps.DesktopActuator != nil {
-		portalReady, portalDetail = o.deps.DesktopActuator.SessionStatus()
+	o.mu.Lock()
+	appVer := o.appVersion
+	primaryAct := o.deps.DesktopActuator
+	cuaAct := o.deps.CuaDesktopActuator
+	o.mu.Unlock()
+	if cfg.CuaDriver.Enabled && cuaAct != nil {
+		portalReady, portalDetail = cuaAct.SessionStatus()
+	} else if primaryAct != nil {
+		portalReady, portalDetail = primaryAct.SessionStatus()
 	}
 
 	return domain.RuntimeStatus{
+		AppVersion:            appVer,
 		State:                 state,
 		StateReason:           reason,
 		AutomationEnabled:     cfg.AutomationEnabled,

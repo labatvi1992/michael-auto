@@ -970,4 +970,27 @@ func TestScreenLockPauseManualSwitchGuardAndPreserveActiveModel(t *testing.T) {
 	if dec.Action != PolicySwitchProfile || dec.TargetModel != "Claude Opus 4.6 (Thinking)" {
 		t.Fatalf("expected preserve_active to retain 'Claude Opus 4.6 (Thinking)', got %+v", dec)
 	}
+
+	// 4. Verify AppVersion, ConfigWarning lifecycle, InvalidateHealthCache, and live SetPrimaryActuator hot-swap (R5)!
+	orch.SetAppVersion("2.5.0-ga")
+	orch.SetConfigWarning("corrupt backup notice")
+	orch.InvalidateHealthCache()
+	stWarn := orch.Status(ctx)
+	if stWarn.AppVersion != "2.5.0-ga" || stWarn.ConfigWarning != "corrupt backup notice" {
+		t.Fatalf("expected AppVersion=2.5.0-ga and ConfigWarning set, got %+v", stWarn)
+	}
+	orch.ClearConfigWarning()
+	if orch.Status(ctx).ConfigWarning != "" {
+		t.Fatal("expected ConfigWarning cleared")
+	}
+
+	fallbackAct := &mockActuator{}
+	orch.SetPrimaryActuator(fallbackAct)
+	cfgOff := orch.GetConfig()
+	cfgOff.CuaDriver.Enabled = false
+	_ = orch.UpdateConfig(cfgOff)
+	stOff := orch.Status(ctx)
+	if !stOff.WaylandPortalReady || stOff.WaylandPortalDetail != "mock-ready" {
+		t.Fatalf("expected Status() to reflect fallback actuator after disabling CuaDriver, got ready=%v detail=%q", stOff.WaylandPortalReady, stOff.WaylandPortalDetail)
+	}
 }

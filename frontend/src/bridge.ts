@@ -121,6 +121,7 @@ let mockAutostart = false;
 const mockConfigListeners = new Set<(cfg: AppConfig) => void>();
 
 let mockStatus: RuntimeStatus = {
+  appVersion: "2.5.0",
   state: "Observing",
   stateReason: "Đang giám sát định kỳ — hạn mức ổn định",
   automationEnabled: true,
@@ -165,7 +166,7 @@ let mockLogs: AuditEntry[] = [
     level: "INFO",
     event: "system_initialized",
     toState: "Observing",
-    message: "Khởi động Michael Auto v2.1 trên Agent Workspace cô lập (Fedora 45 Wayland)"
+    message: "Khởi động Michael Auto v2.5.0 trên Agent Workspace cô lập (Fedora 45 Wayland)"
   }
 ];
 

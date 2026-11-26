@@ -136,6 +136,7 @@ type AgentWorkspaceStatus struct {
 
 // RuntimeStatus provides real-time telemetry to the Wails React dashboard and System Tray.
 type RuntimeStatus struct {
+	AppVersion            string               `json:"appVersion,omitempty"`
 	State                 FSMState             `json:"state"`
 	StateReason           string               `json:"stateReason"`
 	AutomationEnabled     bool                 `json:"automationEnabled"`

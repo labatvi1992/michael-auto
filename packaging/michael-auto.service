@@ -1,11 +1,14 @@
 [Unit]
-Description=Michael Auto — Evidence-Driven AI Quota Orchestrator (Headless Agent Workspace Daemon)
+Description=Michael Auto — Evidence-Driven AI Quota Orchestrator (Agent Workspace Daemon)
 PartOf=graphical-session.target
-After=graphical-session.target dbus.service
+After=graphical-session.target gnome-session-initialized.target dbus.service
+ConditionEnvironment=WAYLAND_DISPLAY
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/michael-auto --headless
+# Uses --start-hidden inside graphical desktop sessions so clicking the GNOME App Grid icon
+# seamlessly raises the Dashboard via control.sock (use --headless only for non-GUI sessions).
+ExecStart=%h/.local/bin/michael-auto --start-hidden
 Restart=on-failure
 RestartSec=5
 Environment=ACCESSIBILITY_ENABLED=1

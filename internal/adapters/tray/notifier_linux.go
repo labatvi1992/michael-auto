@@ -20,16 +20,18 @@ const (
 // DesktopNotifier delivers native GNOME / Freedesktop desktop notifications on Fedora 45 Wayland
 // with built-in anti-spam deduplication.
 type DesktopNotifier struct {
-	mu       sync.Mutex
-	lastKey  string
-	lastSent time.Time
-	minGap   time.Duration
+	mu         sync.Mutex
+	lastKey    string
+	lastSent   time.Time
+	minGap     time.Duration
+	dispatchFn func(title, body string, critical bool) error
 }
 
 // NewDesktopNotifier constructs a native Linux D-Bus desktop notifier.
 func NewDesktopNotifier() *DesktopNotifier {
 	return &DesktopNotifier{
-		minGap: 20 * time.Second,
+		minGap:     20 * time.Second,
+		dispatchFn: sendDBusNotification,
 	}
 }
 
@@ -50,9 +52,13 @@ func (n *DesktopNotifier) Notify(title, body string, critical bool) {
 	}
 	n.lastKey = key
 	n.lastSent = now
+	dispatch := n.dispatchFn
 	n.mu.Unlock()
 
-	if sendDBusNotification(title, body, critical) == nil {
+	if dispatch == nil {
+		dispatch = sendDBusNotification
+	}
+	if dispatch(title, body, critical) == nil {
 		return
 	}
 

@@ -300,7 +300,23 @@ export function App(): React.ReactElement {
         <div className="brand-group">
           <span className="brand-dot" style={{ color: dotColor, backgroundColor: dotColor }} />
           <div>
-            <h1 className="brand-title">Michael Auto</h1>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <h1 className="brand-title">Michael Auto</h1>
+              <span
+                data-testid="app-version-badge"
+                style={{
+                  fontSize: "0.72rem",
+                  fontWeight: 600,
+                  padding: "2px 7px",
+                  borderRadius: 999,
+                  background: "rgba(59, 130, 246, 0.16)",
+                  border: "1px solid rgba(59, 130, 246, 0.35)",
+                  color: "#93c5fd"
+                }}
+              >
+                v{status.appVersion || "2.5.0"}
+              </span>
+            </div>
             <p className="brand-subtitle">
               Điều phối Hạn mức Tự động qua <strong>trycua/cua</strong> • Nền tảng: <strong>{status.displayServer.toUpperCase()}</strong>
               {agentWs?.enabled ? ` • Agent Workspace #${(agentWs.workspaceIndex ?? 1) + 1}` : ""}

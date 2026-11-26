@@ -15,7 +15,7 @@ import (
 // Bundle embeds the Python CUA sidecar sources directly into the Go executable
 // so `michael-auto` works as a self-contained single binary from ~/.local/bin or autostart.
 //
-//go:embed pyproject.toml michael_cua_sidecar/*.py
+//go:embed pyproject.toml cua-driver-0.58.1.requirements.lock michael_cua_sidecar/*.py
 var Bundle embed.FS
 
 const hashMarkerFile = ".bundle_sha256"

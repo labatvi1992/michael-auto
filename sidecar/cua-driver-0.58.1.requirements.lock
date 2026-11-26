@@ -1,0 +1,8 @@
+# Verified PyPI SHA-256 hashes for cua-driver==0.58.1 (0 transitive dependencies)
+# Source: https://pypi.org/pypi/cua-driver/0.58.1/json
+cua-driver==0.58.1 \
+    --hash=sha256:52c3b28a9cf4dce24dd2a05ccd0d51d950bfb8d76703568a47385827367f40fb \
+    --hash=sha256:9e12f9b4db102de3f7f0507cf8581b43bd1a5f0e9a26c105906cebf242650c9e \
+    --hash=sha256:466b86955584a0321fb617dabcf4ba4ed964f6ed90fdbd733e917bd81c1ae23c \
+    --hash=sha256:f7681225b4e2e92656e1dd773a6d781acf09f5205efcd837acacb9366df407fb \
+    --hash=sha256:a08d6fdacf1af6bea569285fe0366fb2e39a099f28887698f79c69f6051cf7ab

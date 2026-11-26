@@ -55,10 +55,14 @@ func TestWaylandWorkspaceManagerFedora45DedicatedAgentWorkspaceAndHardenedBridge
 			case strings.HasSuffix(name, "gdbus"):
 				joined := strings.Join(args, " ")
 				if strings.Contains(joined, "introspect") && extensionEnabled {
-					return "interface " + GnomeBridgeDBusInterface + " {}", nil
+					return "interface " + GnomeBridgeDBusInterface + " { methods: GetWindowFrame(); ArmAutoRoute(); }", nil
 				}
 				if strings.Contains(joined, "ResolveAgentWorkspace") && extensionEnabled {
 					return "(1, true)", nil
+				}
+				if strings.Contains(joined, "ArmAutoRoute") && extensionEnabled {
+					gdbusCalls = append(gdbusCalls, joined)
+					return "(true,)", nil
 				}
 				if strings.Contains(joined, "MoveByTitle") {
 					gdbusCalls = append(gdbusCalls, joined)
@@ -99,10 +103,14 @@ func TestWaylandWorkspaceManagerFedora45DedicatedAgentWorkspaceAndHardenedBridge
 		t.Fatalf("read extension.js failed: %v", err)
 	}
 	extJS := string(extJSBytes)
-	for _, marker := range []string{"_isAllowedEvidencePath", "NOFOLLOW_SYMLINKS", "paint_to_content", "composite_to_stream", "ResolveAgentWorkspace", "GetWindowFrame"} {
+	for _, marker := range []string{"_isAllowedEvidencePath", "NOFOLLOW_SYMLINKS", "paint_to_content", "composite_to_stream", "ResolveAgentWorkspace", "GetWindowFrame", "ArmAutoRoute", "window-created"} {
 		if !strings.Contains(extJS, marker) {
 			t.Fatalf("expected hardened extension.js to contain %q", marker)
 		}
+	}
+
+	if !mgr.ArmAutoRoute(ctx, cfg, 15) {
+		t.Fatal("expected ArmAutoRoute(15) to return true when v4 bridge is live")
 	}
 
 	if !strings.Contains(state["org.gnome.shell:enabled-extensions"], GnomeBridgeExtensionUUID) {
@@ -132,5 +140,40 @@ func TestWaylandWorkspaceManagerFedora45DedicatedAgentWorkspaceAndHardenedBridge
 	}
 	if _, statErr := os.Stat(filepath.Join(extBase, GnomeBridgeExtensionUUID)); !os.IsNotExist(statErr) {
 		t.Fatalf("expected extension dir removed, stat err=%v", statErr)
+	}
+
+	// Verify legacy v2 bridge detection surfaces explicit GNOME relogin upgrade guidance in Status().Detail!
+	legacyMgr := NewTestableWorkspaceManager(
+		func(bin string) (string, error) { return "/usr/bin/" + bin, nil },
+		func(ctx context.Context, name string, args ...string) (string, error) {
+			switch {
+			case strings.HasSuffix(name, "gsettings") && len(args) >= 3:
+				switch args[2] {
+				case "dynamic-workspaces":
+					return "false", nil
+				case "num-workspaces":
+					return "2", nil
+				case "workspace-names":
+					return "['User-Workspace', 'Agent Workspace']", nil
+				}
+			case strings.HasSuffix(name, "gdbus"):
+				if strings.Contains(strings.Join(args, " "), "introspect") {
+					return "interface " + GnomeBridgeDBusInterface + " { methods: MoveByPid(); MoveByTitle(); }", nil
+				}
+			}
+			return "", errors.New("n/a")
+		},
+	)
+	legacySt := legacyMgr.Status(ctx, cfg)
+	if !legacySt.Ready || !strings.Contains(legacySt.Detail, "đăng xuất/đăng nhập lại GNOME 1 lần") {
+		t.Fatalf("expected legacy v2 bridge relogin upgrade notice, got %+v", legacySt)
+	}
+
+	// Verify production constructor & XDG extension directory resolution.
+	tmpData := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tmpData)
+	prodMgr := NewWorkspaceManager()
+	if !strings.HasPrefix(prodMgr.extBaseDir, tmpData) {
+		t.Fatalf("expected extBaseDir under XDG_DATA_HOME, got %q", prodMgr.extBaseDir)
 	}
 }

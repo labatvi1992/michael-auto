@@ -9,4 +9,5 @@ Icon=michael-auto
 Terminal=false
 Categories=Utility;Development;
 StartupNotify=false
+StartupWMClass=michael-auto
 X-GNOME-Autostart-enabled=true
