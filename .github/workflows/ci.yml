@@ -54,8 +54,9 @@ jobs:
           go test -count=1 -v -race -coverprofile=coverage.out ./internal/...
           go tool cover -func=coverage.out | tail -n 15
 
-      - name: Build production Wails Linux binary & run isolated --self-test
+      - name: Build production Wails Linux binary & run full E2E + CLI suite
         run: |
           go build -tags webkit2_41 -trimpath -o build/bin/michael-auto .
+          go test -tags webkit2_41 -count=1 -v -race ./tests/e2e/... .
           ./build/bin/michael-auto --version
           ./build/bin/michael-auto --self-test

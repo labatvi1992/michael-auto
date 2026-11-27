@@ -190,4 +190,64 @@ describe("Michael Auto Desktop Dashboard v2.5 Production", () => {
     fireEvent.click(toggleBtn);
     expect(screen.getByTestId("sandbox-panel-body")).toBeInTheDocument();
   });
+
+  it("supports full E2E profile add/save flow and manual CUA switch triggering pipeline countdown", async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("fsm-state-pill")).toBeInTheDocument();
+    });
+
+    // Switch to Profiles tab, add a 3rd profile, verify unsaved banner, and persist cleanly.
+    fireEvent.click(screen.getByRole("button", { name: /Hồ sơ Tài khoản & Model/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /\+ Thêm Hồ sơ/i }));
+
+    expect(await screen.findByTestId("unsaved-changes-banner")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Lưu Thay đổi Ngay/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("unsaved-changes-banner")).not.toBeInTheDocument();
+    });
+
+    // Trigger manual switch via CUA and verify pipeline progresses cleanly.
+    const switchBtns = screen.getAllByRole("button", { name: /Chuyển ngay qua CUA/i });
+    fireEvent.click(switchBtns[1]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("fsm-state-pill")).toHaveTextContent(/Đang thực thi chu trình/i);
+    });
+  });
+
+  it("surfaces legacy GNOME Bridge v2->v4 relogin warning and supports audit log filtering & clearing", async () => {
+    backendBridge.__setMockStatusPatch({
+      agentWorkspace: {
+        enabled: true,
+        ready: true,
+        workspaceIndex: 1,
+        workspaceName: "Agent Workspace",
+        detail:
+          'Đã dành riêng "Agent Workspace" (Workspace #2) + Cầu nối Wayland cũ đang chạy — đăng xuất/đăng nhập lại GNOME 1 lần để nạp v4 Offscreen & chống nháy OAuth'
+      }
+    });
+
+    render(<App />);
+
+    expect(await screen.findByTestId("agent-workspace-item")).toHaveTextContent(/đăng xuất\/đăng nhập lại GNOME 1 lần/i);
+
+    // Navigate to Logs & Evidence tab, filter by ERROR (0 results), then switch back to ALL and clear logs.
+    fireEvent.click(screen.getByRole("button", { name: /Nhật ký & Evidence/i }));
+    expect(await screen.findByText(/Khởi động Michael Auto v2\.5\.0/i)).toBeInTheDocument();
+
+    const levelSelect = screen.getByRole("combobox");
+    fireEvent.change(levelSelect, { target: { value: "ERROR" } });
+    expect(screen.queryByText(/Khởi động Michael Auto v2\.5\.0/i)).not.toBeInTheDocument();
+
+    fireEvent.change(levelSelect, { target: { value: "ALL" } });
+    expect(screen.getByText(/Khởi động Michael Auto v2\.5\.0/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Xóa Nhật ký/i }));
+    await waitFor(() => {
+      expect(screen.queryByText(/Khởi động Michael Auto v2\.5\.0/i)).not.toBeInTheDocument();
+    });
+  });
 });

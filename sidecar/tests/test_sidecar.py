@@ -1151,6 +1151,22 @@ class SidecarWorkflowTest(unittest.TestCase):
             self.assertIn("io.michael_auto.WorkspaceBridge.ArmAutoRoute", calls[0])
             self.assertEqual(calls[0][-2:], ["60", "2"])
 
+    def test_security_rejects_http_scheme_downgrade_on_accounts_google_com(self) -> None:
+        from michael_cua_sidecar.errors import ERR_SECURITY_VIOLATION, SidecarRpcError
+        from michael_cua_sidecar.security import (
+            is_antigravity_oauth_authorize_url,
+            verify_chrome_omnibox_and_profile,
+        )
+
+        self.assertFalse(is_antigravity_oauth_authorize_url("http://accounts.google.com/o/oauth2/v2/auth?client_id=ag"))
+        self.assertTrue(is_antigravity_oauth_authorize_url("https://accounts.google.com/o/oauth2/v2/auth?client_id=ag"))
+        with self.assertRaises(SidecarRpcError) as ctx:
+            verify_chrome_omnibox_and_profile(
+                "Sign in - Google Accounts - Google Chrome",
+                [FakeElement(role="entry", label="Address and search bar", value="http://accounts.google.com/AccountChooser")],
+            )
+        self.assertEqual(ctx.exception.code, ERR_SECURITY_VIOLATION)
+
 
 if __name__ == "__main__":
     unittest.main()

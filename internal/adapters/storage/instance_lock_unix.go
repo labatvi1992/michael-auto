@@ -44,7 +44,13 @@ func DefaultInstanceRuntimePaths() (string, string) {
 		}
 	}
 	dir := filepath.Join(base, "michael-auto")
-	return filepath.Join(dir, "daemon.lock"), filepath.Join(dir, "control.sock")
+	sockPath := filepath.Join(dir, "control.sock")
+	if len(sockPath) >= 100 {
+		// Linux AF_UNIX sun_path hard limit is 108 bytes; fall back to short user-scoped tmp dir.
+		dir = filepath.Join(os.TempDir(), fmt.Sprintf("ma-%d", os.Getuid()))
+		sockPath = filepath.Join(dir, "control.sock")
+	}
+	return filepath.Join(dir, "daemon.lock"), sockPath
 }
 
 // NewInstanceGuard creates a single-instance lock & wakeup socket guard.

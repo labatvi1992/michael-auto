@@ -128,6 +128,8 @@ def is_antigravity_oauth_authorize_url(raw_url: str) -> bool:
     if not candidate:
         return False
     parsed = urlparse(candidate)
+    if (parsed.scheme or "").lower() != "https":
+        return False
     host = (parsed.hostname or "").lower()
     if host != "accounts.google.com":
         return False
@@ -167,12 +169,13 @@ def verify_chrome_omnibox_and_profile(
     if omnibox_val:
         candidate_url = normalize_https_url(omnibox_val)
         parsed = urlparse(candidate_url)
+        scheme = (parsed.scheme or "").lower()
         host = (parsed.hostname or "").lower()
-        if host not in ALLOWED_GOOGLE_OAUTH_HOSTS:
+        if scheme != "https" or host not in ALLOWED_GOOGLE_OAUTH_HOSTS:
             raise SidecarRpcError(
                 ERR_SECURITY_VIOLATION,
-                f"Chặn bảo mật chống click nhầm/phishing: thanh địa chỉ Chrome đang ở '{host or omnibox_val}', không phải accounts.google.com",
-                {"omnibox": f"{parsed.scheme}://{host}{parsed.path}" if host else "", "windowTitle": window_title, "reason": "omnibox_origin_violation"},
+                f"Chặn bảo mật chống click nhầm/phishing: thanh địa chỉ Chrome đang ở '{scheme}://{host}' (yêu cầu https://accounts.google.com)",
+                {"omnibox": f"{scheme}://{host}{parsed.path}" if host else "", "windowTitle": window_title, "reason": "omnibox_origin_violation"},
             )
         verified_origin = f"https://{host}{parsed.path}"
     else:

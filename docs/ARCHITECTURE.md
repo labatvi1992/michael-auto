@@ -73,6 +73,7 @@ type WorkspaceManager interface {
 	Status(ctx context.Context, cfg domain.AppConfig) domain.AgentWorkspaceStatus
 	EnsureAgentWorkspace(ctx context.Context, cfg domain.AppConfig) (domain.AgentWorkspaceStatus, error)
 	RouteTargetWindowsToAgentWorkspace(ctx context.Context, cfg domain.AppConfig) error
+	UserIsOnAgentWorkspace(ctx context.Context, cfg domain.AppConfig) (onAgentWS bool, known bool)
 }
 
 type EvidenceStore interface {
@@ -90,7 +91,7 @@ type IntentStore interface {
 
 ---
 
-## 4. Các Cơ chế Kỹ thuật Trọng tâm trong `v2.1`
+## 4. Các Cơ chế Kỹ thuật Trọng tâm trong `v2.5.0`
 
 ### 4.1. Cổng Kiểm chứng & Lưu Bằng chứng 5 Bước (`Verify → Screenshot Evidence → Execute`)
 Mỗi thao tác tự động hóa qua `michael_cua_sidecar` đều trải qua `security.py`:

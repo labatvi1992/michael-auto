@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -455,7 +456,13 @@ func (a *App) ExportDiagnostics() (string, error) {
 	gzw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gzw)
 	now := time.Now().UTC()
-	for name, content := range files {
+	fileNames := make([]string, 0, len(files))
+	for name := range files {
+		fileNames = append(fileNames, name)
+	}
+	sort.Strings(fileNames)
+	for _, name := range fileNames {
+		content := files[name]
 		hdr := &tar.Header{
 			Name:    name,
 			Mode:    0o600,

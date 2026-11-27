@@ -4,7 +4,7 @@ PYTHON ?= $(shell command -v python3.12 2>/dev/null || command -v python3.13 2>/
 SIDECAR_VENV := sidecar/.venv
 VERSION := 2.5.0
 
-.PHONY: all deps frontend sidecar test test-race build verify clean install-desktop install-systemd uninstall release-tarball rpm-source
+.PHONY: all deps frontend sidecar test test-race e2e build verify clean install-desktop install-systemd uninstall release-tarball rpm-source
 
 all: build
 
@@ -35,7 +35,10 @@ test-race:
 build: frontend
 	go build -tags $(BUILD_TAGS) -trimpath -o build/bin/michael-auto .
 
-verify: frontend test-race build
+e2e: build
+	go test -tags $(BUILD_TAGS) -count=1 -v -race ./tests/e2e/... .
+
+verify: frontend test-race build e2e
 	python3 -m unittest discover -s sidecar/tests -v
 	cd frontend && npm run test -- --run
 	./build/bin/michael-auto --version
@@ -61,7 +64,14 @@ uninstall:
 
 release-tarball: build
 	mkdir -p dist
-	tar -czf dist/michael-auto-$(VERSION)-linux-amd64.tar.gz -C build/bin michael-auto -C ../../packaging michael-auto.desktop michael-auto.service icons/michael-auto.svg
+	rm -rf dist/michael-auto-$(VERSION)
+	mkdir -p dist/michael-auto-$(VERSION)
+	cp build/bin/michael-auto dist/michael-auto-$(VERSION)/
+	cp packaging/michael-auto.desktop packaging/michael-auto.service dist/michael-auto-$(VERSION)/
+	cp -r packaging/icons dist/michael-auto-$(VERSION)/
+	cp LICENSE README.md CHANGELOG.md SECURITY.md THIRD_PARTY_NOTICES.md dist/michael-auto-$(VERSION)/
+	tar -czf dist/michael-auto-$(VERSION)-linux-amd64.tar.gz -C dist michael-auto-$(VERSION)
+	rm -rf dist/michael-auto-$(VERSION)
 	sha256sum dist/michael-auto-$(VERSION)-linux-amd64.tar.gz > dist/SHA256SUMS.txt
 
 rpm-source: frontend

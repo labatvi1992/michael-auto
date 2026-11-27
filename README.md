@@ -26,8 +26,9 @@ michael-auto/
 ├── main.go                           # Entrypoint Wails Desktop, CLI (--doctor, --setup-sidecar, --self-test, --headless)
 ├── app.go                            # Cầu nối IPC Wails <-> Orchestrator, WorkspaceManager, EvidenceVault & Tray
 ├── docs/
-│   ├── ARCHITECTURE.md               # Đặc tả kiến trúc kỹ thuật v2.1
-│   └── adr/                          # Hồ sơ quyết định kiến trúc ADR-001..008
+│   ├── ARCHITECTURE.md               # Đặc tả kiến trúc kỹ thuật v2.5.0
+│   └── adr/                          # Hồ sơ quyết định kiến trúc ADR-001..011
+├── tests/e2e/                        # Kiểm thử E2E toàn stack (Go Orchestrator <-> Python Sidecar thật)
 ├── internal/
 │   ├── domain/                       # AppConfig, CuaDriverConfig, AgentWorkspaceStatus, EvidenceRecord, PendingIntent
 │   ├── ports/                        # Hexagonal Go Interfaces (CuaDesktopActuator, WorkspaceManager, EvidenceStore, IntentStore)
@@ -89,7 +90,10 @@ make test-race
 # Biên dịch nhị phân gốc cho Fedora 45 Wayland (-tags webkit2_41)
 make build
 
-# Kiểm định toàn trình (Frontend + Go Race + Python Test + Build + Self-Test)
+# Chạy riêng bộ E2E toàn stack (Go Orchestrator <-> Python Sidecar + CLI Binary E2E)
+make e2e
+
+# Kiểm định toàn trình (Frontend + Go Race + Build + Full-Stack E2E + Python Test + Vitest + Self-Test)
 make verify
 ```
 
